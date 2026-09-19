@@ -175,11 +175,9 @@ def to_yahoo(symbol: str) -> str:
 # =============================================================================
 
 
-def _init_db(db_path: Path, read_only: bool = False) -> duckdb.DuckDBPyConnection:
-    """Open DuckDB. Writer creates tables; reader opens read_only for concurrency."""
+def _init_db(db_path: Path) -> duckdb.DuckDBPyConnection:
+    """Open DuckDB and ensure schema exists."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    if read_only:
-        return duckdb.connect(str(db_path), read_only=True)
     con = duckdb.connect(str(db_path))
     con.execute("""
         CREATE TABLE IF NOT EXISTS prices (
@@ -316,9 +314,9 @@ def download_index(db_path: Path, start: pd.Timestamp, end: pd.Timestamp) -> Non
     con.close()
 
 
-def load_prices(db_path: Path, read_only: bool = True) -> pd.DataFrame:
+def load_prices(db_path: Path) -> pd.DataFrame:
     """Return long-form: [date, symbol, close, volume, adj_close]."""
-    con = _init_db(db_path, read_only=read_only)
+    con = _init_db(db_path)
     df = con.execute(
         "SELECT symbol, date, close, volume, adj_close FROM prices ORDER BY symbol, date"
     ).fetchdf()
@@ -327,8 +325,8 @@ def load_prices(db_path: Path, read_only: bool = True) -> pd.DataFrame:
     return df
 
 
-def load_index(db_path: Path, read_only: bool = True) -> pd.Series:
-    con = _init_db(db_path, read_only=read_only)
+def load_index(db_path: Path) -> pd.Series:
+    con = _init_db(db_path)
     df = con.execute(
         "SELECT date, close FROM index_prices WHERE symbol = ? ORDER BY date",
         [INDEX_TICKER],
