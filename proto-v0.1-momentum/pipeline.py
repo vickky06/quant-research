@@ -309,7 +309,7 @@ def per_rebalance_universe(
 # =============================================================================
 
 
-def compute_momentum(close_wide: pd.DataFrame) -> pd.DataFrame:
+def compute_momentum(close_wide: pd.DataFrame, **kwargs) -> pd.DataFrame:
     """12-1 momentum: return from t-13m to t-1m. Cross-sectionally rank-normalized."""
     # Approximate months as 21 trading days
     lookback = MOMENTUM_LOOKBACK_MONTHS * 21
@@ -325,7 +325,7 @@ def compute_momentum(close_wide: pd.DataFrame) -> pd.DataFrame:
 LOW_VOL_WINDOW_DAYS = 60
 
 
-def compute_low_vol(close_wide: pd.DataFrame) -> pd.DataFrame:
+def compute_low_vol(close_wide: pd.DataFrame, **kwargs) -> pd.DataFrame:
     """Reference implementation of long-low-vol / short-high-vol.
 
     RETIRED — failed Gate G1 empirically on Nifty 500 2015-2023
@@ -342,7 +342,7 @@ def compute_low_vol(close_wide: pd.DataFrame) -> pd.DataFrame:
 MEAN_REVERSION_WINDOW_DAYS = 20  # ~1 month
 
 
-def compute_mean_reversion(close_wide: pd.DataFrame) -> pd.DataFrame:
+def compute_mean_reversion(close_wide: pd.DataFrame, **kwargs) -> pd.DataFrame:
     """Short-term mean reversion — Jegadeesh (1990) "Evidence of Predictable
     Behavior of Security Returns", JoF.
 
@@ -361,8 +361,72 @@ def compute_mean_reversion(close_wide: pd.DataFrame) -> pd.DataFrame:
     return ranked
 
 
+DOWNSIDE_BETA_WINDOW_DAYS = 120
+DOWNSIDE_BETA_MIN_DOWN_DAYS = 20
+
+
+def compute_low_downside_beta(
+    close_wide: pd.DataFrame,
+    index_close: pd.Series | None = None,
+    **kwargs,
+) -> pd.DataFrame:
+    """Low-downside-beta: beta measured only on index-DOWN days.
+
+    Frazzini-Pedersen "Betting Against Beta" (2014). Low-beta stocks tend
+    to outperform on a risk-adjusted basis; low *downside* beta specifically
+    targets stocks that resist market drawdowns. Signal is INVERSE beta
+    ranked cross-sectionally — lower downside beta gets higher signal.
+
+    Computed at each month-end using trailing 120 trading days, filtered
+    to days where index return < 0. Requires at least 20 down-days in the
+    window to yield a value; otherwise NaN. Forward-filled to daily
+    granularity for compatibility with downstream aggregation.
+    """
+    if index_close is None:
+        raise ValueError("compute_low_downside_beta requires index_close")
+
+    stock_returns = close_wide.pct_change()
+    index_returns = index_close.pct_change()
+    common_dates = stock_returns.index.intersection(index_returns.index)
+    stock_returns = stock_returns.loc[common_dates]
+    index_returns = index_returns.loc[common_dates]
+
+    window = DOWNSIDE_BETA_WINDOW_DAYS
+    result = pd.DataFrame(index=close_wide.index, columns=close_wide.columns, dtype=float)
+    monthly_dates = month_end_dates(close_wide.index)
+
+    for rb in monthly_dates:
+        if rb not in common_dates:
+            continue
+        pos = common_dates.get_loc(rb)
+        if pos < window:
+            continue
+        window_dates = common_dates[pos - window : pos]
+        s_window = stock_returns.loc[window_dates]
+        i_window = index_returns.loc[window_dates]
+        down_mask = i_window < 0
+        if int(down_mask.sum()) < DOWNSIDE_BETA_MIN_DOWN_DAYS:
+            continue
+        s_down = s_window[down_mask]
+        i_down = i_window[down_mask]
+        i_var = float(i_down.var())
+        if not np.isfinite(i_var) or i_var == 0:
+            continue
+        s_demean = s_down.sub(s_down.mean(), axis=1)
+        i_demean = i_down - i_down.mean()
+        cov_by_stock = s_demean.multiply(i_demean, axis=0).mean()
+        beta_by_stock = cov_by_stock / i_var
+        # Invert (lower beta = higher signal) then cross-sectional rank
+        result.loc[rb] = (-beta_by_stock).rank(pct=True)
+
+    # Forward-fill monthly-computed signal to daily granularity
+    return result.ffill()
+
+
 # Agent registry — each entry is a pure signal-producing function.
 # Retired agents (see docs/adr/) are excluded even if the function still exists.
+# - compute_low_vol: retired per ADR-0002
+# - compute_low_downside_beta: retired per ADR-0004 (same India-market failure pattern)
 AGENTS: dict[str, callable] = {
     "momentum": compute_momentum,
     "mean_reversion": compute_mean_reversion,

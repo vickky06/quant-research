@@ -332,7 +332,7 @@ def main(fast: bool = False, agent: str = "all") -> int:
     print("[step] computing per-Agent signals")
     signals = {}
     for name, fn in AGENTS.items():
-        signals[name] = fn(close_wide)
+        signals[name] = fn(close_wide, index_close=index_close)
         print(f"  {name}: shape={signals[name].shape}")
 
     ensemble_signal = compute_ensemble(signals)
