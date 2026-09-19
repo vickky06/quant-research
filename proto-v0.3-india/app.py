@@ -174,8 +174,8 @@ def _regime_badge(regime: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 st.title("📊 India v0.3 — Signal Dashboard")
-tab_data, tab_signals, tab_trades, tab_perf = st.tabs(
-    ["📁 Data", "📈 Signals", "📝 Trades", "💰 Performance"]
+tab_data, tab_signals, tab_trades, tab_perf, tab_pg = st.tabs(
+    ["📁 Data", "📈 Signals", "📝 Trades", "💰 Performance", "🧪 Playground"]
 )
 
 
@@ -544,3 +544,224 @@ with tab_perf:
             }),
             use_container_width=True, hide_index=True,
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — Playground
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Historical IC estimates per regime (from training + held-out)
+_REGIME_IC: dict[str, float] = {
+    "LOW_VOL_UP_TREND":    0.055,
+    "HIGH_VOL_UP_TREND":   0.009,
+    "HIGH_VOL_DOWN_TREND": 0.051,
+    "LOW_VOL_DOWN_TREND":  0.035,
+    "UNKNOWN":             0.025,
+}
+
+with tab_pg:
+    st.subheader("Signal Playground")
+    st.caption(
+        "Seed up to 6 scenarios from current signals. Each card shows **why** the algo "
+        "ranked that stock and what return to expect. Edit any parameter — P&L recalculates "
+        "live. Promote the best scenario to a real paper trade."
+    )
+
+    pg_n = st.selectbox("Scenarios to generate", [3, 6], index=1, key="pg_n_select")
+    if st.button("🎲 Generate Playground", type="primary"):
+        result = _load_signals_cached()
+        if len(result) == 5:
+            signals_pg, close_pg, liq_pg, regime_df_pg, latest_pg = result
+        else:
+            signals_pg, close_pg, liq_pg, latest_pg = result[0], result[1], result[2], result[3]
+            regime_df_pg = pd.DataFrame()
+
+        regime_pg, weights_pg = _get_regime_and_weights(regime_df_pg, latest_pg)
+        eligible_pg = P.per_rebalance_universe(close_pg, liq_pg, latest_pg)
+        if len(eligible_pg) < 10:
+            eligible_pg = close_pg.loc[latest_pg].dropna().index.tolist()
+
+        ranked_pg = _blend_signals(signals_pg, weights_pg, latest_pg, eligible_pg)
+        top_cut = 1.0 - 1.0 / 10
+        bot_cut = 1.0 / 10
+        longs_pg = ranked_pg[ranked_pg >= top_cut].sort_values(ascending=False)
+        shorts_pg = ranked_pg[ranked_pg <= bot_cut].sort_values(ascending=True)
+
+        n_each = pg_n // 2
+        picks = (
+            [(s, "long", sc) for s, sc in longs_pg.head(n_each).items()] +
+            [(s, "short", sc) for s, sc in shorts_pg.head(n_each).items()]
+        )
+
+        ic_est = _REGIME_IC.get(regime_pg, 0.025)
+        sector_map_pg = get_sector_map()
+        scenarios: list[dict] = []
+
+        for sym, direction, composite_score in picks:
+            live = _live_price(sym)
+            entry = (live if live
+                     else float(close_pg.loc[latest_pg, sym]) if sym in close_pg.columns
+                     else 100.0)
+
+            # Per-signal breakdown: rank each signal independently within eligible
+            breakdown: dict[str, dict] = {}
+            for sig_name, sig_df in signals_pg.items():
+                if latest_pg in sig_df.index and sym in sig_df.columns:
+                    raw_val = float(sig_df.loc[latest_pg, sym])
+                    vals = sig_df.loc[latest_pg, eligible_pg].dropna()
+                    pct_rank = float((vals < raw_val).sum() / len(vals)) if len(vals) > 0 else 0.5
+                else:
+                    pct_rank = 0.5
+                w = weights_pg.get(sig_name, 0.0)
+                breakdown[sig_name] = {"rank": pct_rank, "weight": w,
+                                       "contribution": round(pct_rank * w, 4)}
+
+            # IC-implied target: top-decile stock in current IC regime
+            target_pct = ic_est * composite_score * 2.0 * 100
+            target_pct = round(min(max(target_pct, 1.5), 15.0), 1)
+
+            sign = 1 if direction == "long" else -1
+            target = round(entry * (1 + sign * target_pct / 100), 2)
+            stop   = round(entry * (1 - sign * 0.03), 2)          # default 3% stop
+
+            scenarios.append({
+                "sym": sym,
+                "sector": sector_map_pg.get(sym, "—"),
+                "direction": direction,
+                "composite_score": composite_score,
+                "breakdown": breakdown,
+                "entry_price": entry,
+                "target_price": target,
+                "stop_price": stop,
+                "qty": 100,
+                "hold_days": 20,
+                "regime": regime_pg,
+                "ic_est": ic_est,
+                "target_pct": target_pct,
+            })
+
+        st.session_state["pg_scenarios"] = scenarios
+        st.session_state["pg_regime"] = regime_pg
+        st.rerun()
+
+    # ── Render cards ────────────────────────────────────────────────────────
+    if not st.session_state.get("pg_scenarios"):
+        st.info("Click **Generate Playground** above to seed scenarios from current signals.")
+    else:
+        scenarios = st.session_state["pg_scenarios"]
+        regime_pg = st.session_state.get("pg_regime", "UNKNOWN")
+
+        st.markdown(
+            f"Seeded from regime: {_regime_badge(regime_pg)} "
+            f"&nbsp;|&nbsp; IC estimate: **{_REGIME_IC.get(regime_pg, 0.025):.3f}**",
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+
+        comparison_rows: list[dict] = []
+
+        for row_start in range(0, len(scenarios), 3):
+            cols = st.columns(3)
+            for col_offset in range(3):
+                sc_idx = row_start + col_offset
+                if sc_idx >= len(scenarios):
+                    break
+                pg = scenarios[sc_idx]
+                with cols[col_offset]:
+                    dir_emoji = "🟢" if pg["direction"] == "long" else "🔴"
+                    st.markdown(
+                        f"**{dir_emoji} Scenario #{sc_idx + 1}**<br>"
+                        f"<span style='font-size:1.1em;font-weight:700'>{pg['sym']}</span>"
+                        f"&nbsp;<span style='color:grey;font-size:0.85em'>{pg['sector']}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(
+                        f"Composite score: **{pg['composite_score']:.4f}** | "
+                        f"{pg['direction'].upper()} | "
+                        f"IC-implied target: +{pg['target_pct']:.1f}%"
+                    )
+
+                    # Signal breakdown mini-table
+                    bd_rows = [
+                        {
+                            "Signal": name.replace("_", " "),
+                            "Rank %": f"{bd['rank']:.0%}",
+                            "Weight": f"{bd['weight']:.0%}",
+                            "Contribution": f"{bd['contribution']:.3f}",
+                        }
+                        for name, bd in pg["breakdown"].items()
+                    ]
+                    st.dataframe(pd.DataFrame(bd_rows), use_container_width=True,
+                                 hide_index=True, height=135)
+
+                    # Editable params
+                    entry  = st.number_input("Entry ₹",  value=float(pg["entry_price"]),
+                                             step=1.0, format="%.2f", key=f"pg_{sc_idx}_entry")
+                    target = st.number_input("Target ₹", value=float(pg["target_price"]),
+                                             step=1.0, format="%.2f", key=f"pg_{sc_idx}_target")
+                    stop   = st.number_input("Stop ₹",   value=float(pg["stop_price"]),
+                                             step=1.0, format="%.2f", key=f"pg_{sc_idx}_stop")
+                    qty    = st.number_input("Qty",       value=int(pg["qty"]),
+                                             min_value=1, step=10, key=f"pg_{sc_idx}_qty")
+                    hold   = st.number_input("Hold days", value=int(pg["hold_days"]),
+                                             min_value=1, max_value=365, step=5,
+                                             key=f"pg_{sc_idx}_hold")
+
+                    # Live P&L
+                    sign = 1 if pg["direction"] == "long" else -1
+                    pnl_tgt  = (target - entry) * sign * qty
+                    pnl_stop = (stop   - entry) * sign * qty
+                    ret_tgt  = (target / entry - 1) * sign * 100 if entry else 0
+                    ret_stop = (stop   / entry - 1) * sign * 100 if entry else 0
+                    rr = abs(pnl_tgt / pnl_stop) if pnl_stop != 0 else 0.0
+
+                    mc1, mc2 = st.columns(2)
+                    mc1.metric("↑ At target",  f"₹{pnl_tgt:+,.0f}",  f"{ret_tgt:+.1f}%")
+                    mc2.metric("↓ At stop",    f"₹{pnl_stop:+,.0f}", f"{ret_stop:+.1f}%")
+                    st.caption(
+                        f"R:R = **{rr:.1f}x** &nbsp;|&nbsp; "
+                        f"Notional ₹{entry * qty:,.0f} &nbsp;|&nbsp; "
+                        f"Hold {hold}d",
+                        unsafe_allow_html=True,
+                    )
+
+                    if st.button("→ Promote to Paper Trade", key=f"pg_{sc_idx}_promote"):
+                        trades_df = _load_trades()
+                        new_row = {
+                            "id": str(_next_id(trades_df)),
+                            "symbol": pg["sym"], "direction": pg["direction"],
+                            "qty": str(qty), "entry_price": str(entry),
+                            "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            "exit_price": "", "exit_date": "", "pnl": "", "pnl_pct": "",
+                            "status": "open",
+                            "notes": (f"playground #{sc_idx+1} | score={pg['composite_score']:.4f} "
+                                      f"| target={target} | stop={stop}"),
+                        }
+                        trades_df = pd.concat([trades_df, pd.DataFrame([new_row])], ignore_index=True)
+                        _save_trades(trades_df)
+                        st.success(f"✓ {pg['sym']} promoted — check the Trades tab.")
+
+                    comparison_rows.append({
+                        "#": sc_idx + 1,
+                        "Symbol": pg["sym"],
+                        "Dir": pg["direction"].upper(),
+                        "Score": f"{pg['composite_score']:.4f}",
+                        "Entry ₹": f"{entry:,.2f}",
+                        "Target ₹": f"{target:,.2f}",
+                        "Stop ₹": f"{stop:,.2f}",
+                        "Qty": qty,
+                        "P&L @ tgt": f"₹{pnl_tgt:+,.0f}",
+                        "Return": f"{ret_tgt:+.1f}%",
+                        "R:R": f"{rr:.1f}x",
+                    })
+
+            st.markdown("---")
+
+        # ── Comparison table ────────────────────────────────────────────────
+        st.subheader("Side-by-side comparison")
+        if comparison_rows:
+            st.dataframe(pd.DataFrame(comparison_rows), use_container_width=True, hide_index=True)
+
+        if st.button("🗑️ Clear Playground"):
+            del st.session_state["pg_scenarios"]
+            st.rerun()
