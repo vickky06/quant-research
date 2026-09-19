@@ -677,6 +677,222 @@ def compute_max_drawdown(monthly_returns: pd.Series) -> dict:
     }
 
 
+# =============================================================================
+# Meta-Learner (v0.3) — IC-weighted signal combining
+# =============================================================================
+
+META_IC_WINDOW_MONTHS = 24
+META_MIN_WEIGHT = 0.05
+META_MAX_WEIGHT = 0.30
+META_SHRINKAGE = 0.5  # 0 = pure IC weights, 1 = pure equal-weight prior
+META_RESET_EVERY_MONTHS = 12
+
+
+def _compute_meta_weights_for_step(
+    agent_names: list[str],
+    ic_history_by_agent: dict[str, list[float]],
+    step_index: int,
+    window: int,
+    min_w: float,
+    max_w: float,
+    shrinkage: float,
+    reset_every: int,
+) -> dict[str, float]:
+    """Return weights for the next Rebalance given per-Agent IC history so far.
+
+    Warmup: while step_index < window or reset boundary → equal-weight.
+    Otherwise: rolling-window mean IC per Agent → positive-only proportional
+    weights → shrink toward equal-weight prior → clip to [min_w, max_w] →
+    renormalize.
+    """
+    n = len(agent_names)
+    equal = 1.0 / n
+    equal_weights = {a: equal for a in agent_names}
+
+    # Warmup or forced reset
+    if step_index < window or (reset_every > 0 and step_index % reset_every == 0):
+        return equal_weights
+
+    # Rolling window mean IC per agent
+    mean_ic = {}
+    for a in agent_names:
+        recent = ic_history_by_agent.get(a, [])[-window:]
+        if not recent:
+            return equal_weights
+        mean_ic[a] = float(np.mean(recent))
+
+    # Positive-only proportional weights
+    pos = {a: max(0.0, ic) for a, ic in mean_ic.items()}
+    total_pos = sum(pos.values())
+    if total_pos <= 0:
+        raw = equal_weights.copy()
+    else:
+        raw = {a: pos[a] / total_pos for a in agent_names}
+
+    # Shrink toward equal-weight prior
+    shrunk = {a: shrinkage * equal + (1 - shrinkage) * raw[a] for a in agent_names}
+
+    # Clip to [min_w, max_w] and renormalize
+    clipped = {a: min(max_w, max(min_w, shrunk[a])) for a in agent_names}
+    s = sum(clipped.values())
+    return {a: clipped[a] / s for a in agent_names}
+
+
+@dataclass
+class MetaEnsembleResult:
+    monthly_returns: pd.Series
+    signal_at_rebalance: dict
+    forward_returns: dict
+    regime_at_rebalance: pd.Series
+    turnover: pd.Series
+    weights_at_rebalance: pd.DataFrame  # rows = rebalance dates, cols = agents
+    per_agent_ic_at_rebalance: pd.DataFrame  # same shape as weights
+
+
+def run_meta_ensemble_backtest(
+    signals_by_agent: dict[str, pd.DataFrame],
+    close_wide: pd.DataFrame,
+    liquidity_60d: pd.DataFrame,
+    regime_df: pd.DataFrame,
+    training_start: pd.Timestamp,
+    training_end: pd.Timestamp,
+    cost_bps: int,
+    ic_window_months: int = META_IC_WINDOW_MONTHS,
+    min_weight: float = META_MIN_WEIGHT,
+    max_weight: float = META_MAX_WEIGHT,
+    shrinkage: float = META_SHRINKAGE,
+    reset_every_months: int = META_RESET_EVERY_MONTHS,
+) -> MetaEnsembleResult:
+    """Backtest the ensemble with a dynamic IC-weighted Meta-Learner.
+
+    Meta-Learner mechanics per contract §6:
+      - Rolling IC per Agent computed strictly out-of-sample
+      - Weights shrunk toward equal-weight prior
+      - Hard floor min_weight, cap max_weight, renormalized
+      - Forced equal-weight reset every reset_every_months rebalances
+      - Warmup with equal weights until ic_window_months rebalances complete
+    """
+    assert training_end < HELD_OUT_START, "training/held-out overlap"
+
+    agent_names = list(signals_by_agent.keys())
+    ic_history: dict[str, list[float]] = {a: [] for a in agent_names}
+
+    rebalance_dates = [
+        d for d in month_end_dates(close_wide.index) if training_start <= d <= training_end
+    ]
+    min_eligible = min(20, max(10, close_wide.shape[1] // 2))
+
+    monthly_returns = []
+    signals_snapshot: dict = {}
+    fwd_snapshot: dict = {}
+    regime_snapshot = {}
+    turnovers = []
+    weights_records = []
+    ic_records = []
+
+    prev_long: set[str] = set()
+    prev_short: set[str] = set()
+
+    for i, rb in enumerate(rebalance_dates[:-1]):
+        next_rb = rebalance_dates[i + 1]
+        elig = per_rebalance_universe(close_wide, liquidity_60d, rb)
+        if len(elig) < min_eligible:
+            continue
+
+        # Weights for THIS rebalance use IC history strictly before it
+        weights = _compute_meta_weights_for_step(
+            agent_names, ic_history, i, ic_window_months,
+            min_weight, max_weight, shrinkage, reset_every_months,
+        )
+        weights_records.append({"date": rb, **weights})
+
+        # Weighted ensemble score across eligible instruments
+        weighted_score = pd.Series(0.0, index=elig, dtype=float)
+        weight_mass = pd.Series(0.0, index=elig, dtype=float)
+        for a, sig_df in signals_by_agent.items():
+            agent_sig = sig_df.loc[rb, elig].dropna() if rb in sig_df.index else pd.Series(dtype=float)
+            if agent_sig.empty:
+                continue
+            weighted_score.loc[agent_sig.index] += agent_sig * weights[a]
+            weight_mass.loc[agent_sig.index] += weights[a]
+        # Normalize by actual mass in case some agents were NaN for some instruments
+        with np.errstate(divide="ignore", invalid="ignore"):
+            score = (weighted_score / weight_mass).replace([np.inf, -np.inf], np.nan).dropna()
+        if len(score) < min_eligible:
+            continue
+        ensemble_rank = score.rank(pct=True)
+
+        # Decile portfolios
+        top_cut = 1.0 - 1.0 / DECILES
+        bot_cut = 1.0 / DECILES
+        long_names = ensemble_rank[ensemble_rank >= top_cut].index.tolist()
+        short_names = ensemble_rank[ensemble_rank <= bot_cut].index.tolist()
+
+        # Forward returns
+        fwd = (close_wide.loc[next_rb, elig] / close_wide.loc[rb, elig] - 1.0).dropna()
+
+        long_ret = fwd.reindex(long_names).mean()
+        short_ret = fwd.reindex(short_names).mean()
+        gross_ls = long_ret - short_ret
+
+        new_long = len(set(long_names) - prev_long) / max(len(long_names), 1)
+        new_short = len(set(short_names) - prev_short) / max(len(short_names), 1)
+        turnover_fraction = 0.5 * (new_long + new_short)
+        cost = turnover_fraction * (cost_bps / 10_000.0)
+        net_ls = gross_ls - cost
+
+        monthly_returns.append((rb, net_ls))
+        signals_snapshot[rb.strftime("%Y-%m-%d")] = ensemble_rank.to_dict()
+        fwd_snapshot[rb.strftime("%Y-%m-%d")] = fwd.to_dict()
+        regime_snapshot[rb] = (
+            regime_df.loc[rb, "regime"] if rb in regime_df.index else "UNKNOWN"
+        )
+        turnovers.append((rb, turnover_fraction))
+
+        # Record per-agent IC for THIS rebalance (now that forward return is known)
+        ic_row = {"date": rb}
+        for a, sig_df in signals_by_agent.items():
+            if rb not in sig_df.index:
+                ic_row[a] = np.nan
+                continue
+            agent_sig = sig_df.loc[rb, elig].dropna()
+            common = agent_sig.index.intersection(fwd.index)
+            if len(common) < 20:
+                ic_row[a] = np.nan
+                continue
+            rho, _ = stats.spearmanr(agent_sig.loc[common], fwd.loc[common])
+            rho_f = float(rho)
+            ic_row[a] = rho_f
+            if not np.isnan(rho_f):
+                ic_history[a].append(rho_f)
+        ic_records.append(ic_row)
+
+        prev_long = set(long_names)
+        prev_short = set(short_names)
+
+    if not monthly_returns:
+        raise RuntimeError("no rebalances produced returns in meta-ensemble")
+
+    idx, vals = zip(*monthly_returns)
+    mr = pd.Series(vals, index=pd.DatetimeIndex(idx), name="ls_return")
+    reg_ser = pd.Series(regime_snapshot, name="regime")
+    tv_idx, tv_vals = zip(*turnovers)
+    tv = pd.Series(tv_vals, index=pd.DatetimeIndex(tv_idx), name="turnover")
+
+    weights_df = pd.DataFrame(weights_records).set_index("date")
+    ic_df = pd.DataFrame(ic_records).set_index("date")
+
+    return MetaEnsembleResult(
+        monthly_returns=mr,
+        signal_at_rebalance=signals_snapshot,
+        forward_returns=fwd_snapshot,
+        regime_at_rebalance=reg_ser,
+        turnover=tv,
+        weights_at_rebalance=weights_df,
+        per_agent_ic_at_rebalance=ic_df,
+    )
+
+
 def evaluate_gate_g2(
     dsr_result: dict, dd_result: dict,
     threshold_dsr: float = 1.0, threshold_max_dd: float = 0.25,

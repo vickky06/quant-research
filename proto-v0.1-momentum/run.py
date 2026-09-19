@@ -48,6 +48,135 @@ from pipeline import (
 from run_log import log_run
 
 
+def run_meta_ensemble(
+    signals_by_agent: dict,
+    close_wide: pd.DataFrame,
+    liquidity_60d: pd.DataFrame,
+    regime_df: pd.DataFrame,
+    mode: str,
+    universe_symbols_requested: int,
+) -> dict:
+    """Backtest the IC-weighted Meta-Learner. Persists to SQLite."""
+    print("\n" + "=" * 70)
+    print("Backtesting: meta_ensemble  (IC-weighted, shrunk, clipped)")
+    print("=" * 70)
+
+    result = P.run_meta_ensemble_backtest(
+        signals_by_agent=signals_by_agent,
+        close_wide=close_wide,
+        liquidity_60d=liquidity_60d,
+        regime_df=regime_df,
+        training_start=TRAINING_START,
+        training_end=TRAINING_END,
+        cost_bps=ROUNDTRIP_COST_BPS,
+    )
+
+    n_rebalances = len(result.monthly_returns)
+    mean_turnover = float(result.turnover.mean())
+    total_return = float((1 + result.monthly_returns).prod() - 1)
+
+    ic_series = P.compute_ic_per_rebalance(
+        result.signal_at_rebalance, result.forward_returns
+    )
+    scorecard = P.compute_regime_scorecard(ic_series, result.regime_at_rebalance)
+    dsr_result = compute_dsr(result.monthly_returns)
+    gate = evaluate_gate_g1(dsr_result, scorecard, threshold_dsr=0.5)
+    dd_result = P.compute_max_drawdown(result.monthly_returns)
+
+    print(f"  Rebalances:        {n_rebalances}")
+    print(f"  Cum L/S net:       {total_return:+.2%}")
+    print(f"  Sharpe (ann.):     {dsr_result['sharpe_annualized']:+.3f}")
+    print(f"  DSR (PSR):         {dsr_result['psr']:.3f}")
+    print(f"  Mean IC:           {ic_series.mean():+.4f}")
+    print(f"  Turnover:          {mean_turnover:.1%}")
+    print(f"  Max drawdown:      {dd_result['max_drawdown']:+.2%}  "
+          f"({dd_result.get('duration_months')}m peak-to-trough, "
+          f"recovery: {dd_result.get('recovery_months')}m)")
+
+    # Weight evolution snapshot
+    weights_df = result.weights_at_rebalance
+    print(f"  Weight evolution ({len(weights_df)} rebalances):")
+    for a in weights_df.columns:
+        w_series = weights_df[a]
+        print(f"    {a:15s}  mean={w_series.mean():.2%}  min={w_series.min():.2%}  max={w_series.max():.2%}")
+
+    insufficient = set(gate.get("regimes_insufficient_sample", []))
+    print(f"  Regime Scorecard (n<{gate.get('regime_min_n', 10)} excluded):")
+    for regime, row in scorecard.iterrows():
+        n = int(row["count"])
+        excluded = regime in insufficient
+        if excluded:
+            marker = "—"
+            suffix = " (insufficient sample)"
+        else:
+            marker = "✓" if row["mean"] > 0 else "✗"
+            suffix = ""
+        print(f"    {marker} {regime:22s}  IC={row['mean']:+.4f}  n={n}{suffix}")
+    print(
+        f"  Gate G1:           {'PASS ✓' if gate['verdict'] == 'PASS' else 'FAIL ✗'}"
+        f" (DSR pass={gate['dsr_pass']}, regime pass={gate['regime_pass']}: "
+        f"{gate['regime_positive_count']}/{gate['regime_total_evaluated']} eligible)"
+    )
+
+    scorecard_dict = scorecard_to_dict(scorecard)
+    run_id = log_run(
+        mode=mode,
+        agent="meta_ensemble",
+        universe_size=int(close_wide.shape[1]),
+        params={
+            "momentum_lookback_months": P.MOMENTUM_LOOKBACK_MONTHS,
+            "momentum_skip_months": P.MOMENTUM_SKIP_MONTHS,
+            "mean_reversion_window_days": P.MEAN_REVERSION_WINDOW_DAYS,
+            "deciles": P.DECILES,
+            "cost_bps": P.ROUNDTRIP_COST_BPS,
+            "meta_ic_window_months": P.META_IC_WINDOW_MONTHS,
+            "meta_min_weight": P.META_MIN_WEIGHT,
+            "meta_max_weight": P.META_MAX_WEIGHT,
+            "meta_shrinkage": P.META_SHRINKAGE,
+            "meta_reset_every_months": P.META_RESET_EVERY_MONTHS,
+            "training_start": str(TRAINING_START.date()),
+            "training_end": str(TRAINING_END.date()),
+            "universe_symbols_requested": universe_symbols_requested,
+        },
+        verdict=gate["verdict"],
+        dsr=gate["observed_dsr_psr"],
+        sharpe_annualized=dsr_result["sharpe_annualized"],
+        cumulative_return=total_return,
+        ic_mean=float(ic_series.mean()),
+        ic_positive_regimes=gate["regime_positive_count"],
+        ic_total_regimes=gate["regime_total_evaluated"],
+        n_rebalances=n_rebalances,
+        n_monthly_observations=dsr_result["T"],
+        avg_turnover=mean_turnover,
+        scorecard=scorecard_dict,
+        max_drawdown=dd_result["max_drawdown"],
+        max_dd_duration_months=dd_result.get("duration_months"),
+        max_dd_recovery_months=dd_result.get("recovery_months"),
+    )
+    print(f"  Logged as run_id={run_id}")
+
+    # Persist weights + IC evolution to output/ for the dashboard
+    proto_root = Path(__file__).parent
+    (proto_root / "output" / "meta_weights.csv").write_text(weights_df.to_csv())
+    (proto_root / "output" / "meta_ic_evolution.csv").write_text(
+        result.per_agent_ic_at_rebalance.to_csv()
+    )
+
+    return {
+        "agent": "meta_ensemble",
+        "run_id": run_id,
+        "verdict": gate["verdict"],
+        "dsr": gate["observed_dsr_psr"],
+        "sharpe": dsr_result["sharpe_annualized"],
+        "cum_return": total_return,
+        "max_drawdown": dd_result["max_drawdown"],
+        "dsr_result": dsr_result,
+        "dd_result": dd_result,
+        "scorecard": scorecard_dict,
+        "gate": gate,
+    }
+
+
 def run_for_signal(
     agent_name: str,
     signal_df: pd.DataFrame,
@@ -213,26 +342,42 @@ def main(fast: bool = False, agent: str = "all") -> int:
     regime_df = compute_regime(index_close)
 
     # ---- Determine which agents to run ----
+    ensemble_kinds = ["ensemble", "meta_ensemble"]
     if agent == "all":
-        targets = list(signals.keys()) + ["ensemble"]
-    elif agent == "ensemble":
-        targets = ["ensemble"]
+        targets = list(signals.keys()) + ensemble_kinds
+    elif agent in ensemble_kinds:
+        targets = [agent]
     elif agent in signals:
         targets = [agent]
     else:
-        print(f"[fatal] unknown agent: {agent}. Choices: {list(signals.keys()) + ['ensemble', 'all']}")
+        choices = list(signals.keys()) + ensemble_kinds + ["all"]
+        print(f"[fatal] unknown agent: {agent}. Choices: {choices}")
         return 1
 
     mode = "fast" if fast else "full"
 
     results = []
     for target in targets:
-        sig = ensemble_signal if target == "ensemble" else signals[target]
-        results.append(
-            run_for_signal(
-                target, sig, close_wide, liquidity_60d, regime_df, mode, len(symbols)
+        if target == "ensemble":
+            sig = ensemble_signal
+            results.append(
+                run_for_signal(
+                    target, sig, close_wide, liquidity_60d, regime_df, mode, len(symbols)
+                )
             )
-        )
+        elif target == "meta_ensemble":
+            results.append(
+                run_meta_ensemble(
+                    signals, close_wide, liquidity_60d, regime_df, mode, len(symbols)
+                )
+            )
+        else:
+            sig = signals[target]
+            results.append(
+                run_for_signal(
+                    target, sig, close_wide, liquidity_60d, regime_df, mode, len(symbols)
+                )
+            )
 
     # ---- Summary + last-run-on-disk artifacts (from the final result — typically ensemble) ----
     final = results[-1]
@@ -251,12 +396,14 @@ def main(fast: bool = False, agent: str = "all") -> int:
             f"{r['max_drawdown']:>+8.2%}"
         )
 
-    # ---- Gate G2 evaluation on ensemble ----
-    ensemble_result = next((r for r in results if r["agent"] == "ensemble"), None)
-    if ensemble_result:
+    # ---- Gate G2 evaluation on best ensemble ----
+    for target in ("meta_ensemble", "ensemble"):
+        ensemble_result = next((r for r in results if r["agent"] == target), None)
+        if not ensemble_result:
+            continue
         g2 = P.evaluate_gate_g2(ensemble_result["dsr_result"], ensemble_result["dd_result"])
         print("\n" + "=" * 70)
-        print(f"GATE G2 (ensemble → held-out eligibility): {g2['verdict']}")
+        print(f"GATE G2 ({target} → held-out eligibility): {g2['verdict']}")
         print("=" * 70)
         print(f"  DSR ≥ 1.0:        {'✓' if g2['dsr_pass'] else '✗'}  "
               f"(observed {g2['observed_dsr']:.3f})")
