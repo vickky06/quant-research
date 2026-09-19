@@ -1,9 +1,9 @@
 # Strategy Design Contract
 
 **Owner**: Vivek Singh
-**Version**: 1.1
+**Version**: 1.2
 **Created**: 2026-09-19
-**Last amended**: 2026-09-19 (v1.0 → v1.1 — see Amendments at end)
+**Last amended**: 2026-09-19 (v1.1 → v1.2 — see Amendments at end)
 **Purpose**: Immutable contract defining what this quant system is and isn't. Every future decision is tested against this doc. If a proposed change violates the contract, either the change is rejected or the contract is *explicitly amended and versioned* — never silently drifted.
 
 > **The single hardest discipline in retail quant is not tweaking the rules when a backtest disappoints. This document exists to make that discipline enforceable.**
@@ -171,7 +171,7 @@ These principles are baked into the architecture. Deviations require explicit co
 3. **Anti-correlated signal requirement**: at least **one signal must be crisis-resilient** (e.g., trend on VIX/gold, low-vol quality, or an explicit defensive rotation).
 4. **Signal validation**: every signal ships with a **written hypothesis** (why it should work economically), a **purged k-fold CV** result, and a **regime-conditional IC table**. No signal enters production without all three.
 5. **Meta-learner (PM agent) update cadence**: **monthly**, never daily. Daily weight updates fit noise.
-6. **PM weight constraints**: floor 5%, cap 30% per agent; L2 regularization on weight *changes* between rebalances.
+6. **PM weight constraints**: floor 5%, cap `max(30%, 1.2/n_agents)` per agent (scales with Agent count per ADR-0005); L2 regularization on weight *changes* between rebalances.
 7. **Forced diversification reset**: every 12 months, PM weights are reset to equal-weight regardless of recent performance. Prevents winner-take-all drift.
 8. **Position sizing**: Kelly-lite (0.25 × Kelly), single-name cap 5% of portfolio, sector cap 25%.
 9. **Drawdown gate**: if realized drawdown exceeds 15% at any point, position sizing is cut 50% until portfolio recovers to prior high-water mark.
@@ -296,6 +296,16 @@ Once v1 is done and live small money runs for 12 months meeting G5, the system i
 ---
 
 ## Amendments
+
+### v1.1 → v1.2 (2026-09-19)
+
+**Change**: §6.6 PM weight constraint `cap 30%` → `cap max(30%, 1.2/n_agents)`. The cap now scales with the number of Agents in the ensemble.
+
+**Reason**: v0.3 empirically demonstrated that a fixed 30% cap is *more restrictive* than the equal-weight prior when N < 4 Agents. With N=2, equal weight is 50% each — a 30% cap forces renormalization back to ~50/50 regardless of Meta-Learner IC evidence. The scaling formula preserves the original constraint intent (~1.2× equal-weight as tilt ceiling) at any Agent count. At N ≥ 4 the formula returns 30%, unchanged from v1.1.
+
+**Justification**: see [ADR-0005](docs/adr/0005-meta-weight-bounds-scale-with-n.md).
+
+**Gates affected**: none directly. Meta-Learner weights change; ensemble backtest re-runs under new bounds.
 
 ### v1.0 → v1.1 (2026-09-19)
 

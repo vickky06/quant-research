@@ -455,10 +455,13 @@ def compute_return_smoothness(close_wide: pd.DataFrame, **kwargs) -> pd.DataFram
 # Retired agents (see docs/adr/) are excluded even if the function still exists.
 # - compute_low_vol: retired per ADR-0002
 # - compute_low_downside_beta: retired per ADR-0004 (same India-market failure pattern)
+# - compute_return_smoothness: retired for this ensemble — individually PASSES G1
+#   (DSR 0.898, Sharpe 0.441) but degrades the momentum+mean_reversion ensemble
+#   because it is correlated with momentum (a "smooth momentum" proxy). Not a
+#   failure of the signal; a failure of ensemble fit. Kept as reference.
 AGENTS: dict[str, callable] = {
     "momentum": compute_momentum,
     "mean_reversion": compute_mean_reversion,
-    "return_smoothness": compute_return_smoothness,
 }
 
 
@@ -776,9 +779,16 @@ def compute_max_drawdown(monthly_returns: pd.Series) -> dict:
 
 META_IC_WINDOW_MONTHS = 24
 META_MIN_WEIGHT = 0.05
-META_MAX_WEIGHT = 0.30
+META_MAX_WEIGHT_FLOOR = 0.30  # per Contract v1.2 §6.6 — see ADR-0005
 META_SHRINKAGE = 0.5  # 0 = pure IC weights, 1 = pure equal-weight prior
 META_RESET_EVERY_MONTHS = 12
+
+
+def dynamic_max_weight(n_agents: int) -> float:
+    """Contract v1.2: cap = max(0.30, 1.2 / n_agents). See ADR-0005."""
+    if n_agents <= 0:
+        return META_MAX_WEIGHT_FLOOR
+    return max(META_MAX_WEIGHT_FLOOR, 1.2 / n_agents)
 
 
 def _compute_meta_weights_for_step(
@@ -852,7 +862,7 @@ def run_meta_ensemble_backtest(
     cost_bps: int,
     ic_window_months: int = META_IC_WINDOW_MONTHS,
     min_weight: float = META_MIN_WEIGHT,
-    max_weight: float = META_MAX_WEIGHT,
+    max_weight: float | None = None,  # None → dynamic per ADR-0005
     shrinkage: float = META_SHRINKAGE,
     reset_every_months: int = META_RESET_EVERY_MONTHS,
 ) -> MetaEnsembleResult:
@@ -869,6 +879,10 @@ def run_meta_ensemble_backtest(
 
     agent_names = list(signals_by_agent.keys())
     ic_history: dict[str, list[float]] = {a: [] for a in agent_names}
+
+    # Resolve max_weight per Contract v1.2 (ADR-0005): scales with n_agents.
+    if max_weight is None:
+        max_weight = dynamic_max_weight(len(agent_names))
 
     rebalance_dates = [
         d for d in month_end_dates(close_wide.index) if training_start <= d <= training_end

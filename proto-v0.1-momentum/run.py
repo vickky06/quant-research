@@ -131,7 +131,7 @@ def run_meta_ensemble(
             "cost_bps": P.ROUNDTRIP_COST_BPS,
             "meta_ic_window_months": P.META_IC_WINDOW_MONTHS,
             "meta_min_weight": P.META_MIN_WEIGHT,
-            "meta_max_weight": P.META_MAX_WEIGHT,
+            "meta_max_weight": P.dynamic_max_weight(len(signals_by_agent)),
             "meta_shrinkage": P.META_SHRINKAGE,
             "meta_reset_every_months": P.META_RESET_EVERY_MONTHS,
             "training_start": str(TRAINING_START.date()),
