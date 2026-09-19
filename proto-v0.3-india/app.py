@@ -192,17 +192,24 @@ with tab_data:
     fast_mode = col2.checkbox("Fast mode (50 tickers)", value=False)
 
     if st.button("🔄 Refresh Data", type="primary"):
-        # Clear cache first so no open DB connections linger before refresh
         _load_prices_cached.clear()
         _load_signals_cached.clear()
-        with st.spinner("Downloading new bars… (progress in terminal)"):
-            try:
-                run_refresh(interval=interval, fast=fast_mode)
-                _load_prices_cached.clear()
-                _load_signals_cached.clear()
-                st.success("Data refreshed — reload the Signals tab to see updated ranks.")
-            except Exception as exc:
-                st.error(f"Refresh failed: {exc}")
+        prog = st.progress(0, text="Starting…")
+        status = st.empty()
+        try:
+            def _on_progress(fraction: float, msg: str) -> None:
+                prog.progress(min(fraction, 1.0), text=msg)
+                status.caption(msg)
+
+            run_refresh(interval=interval, fast=fast_mode, on_progress=_on_progress)
+            prog.progress(1.0, text="Done!")
+            status.empty()
+            _load_prices_cached.clear()
+            _load_signals_cached.clear()
+            st.success("Data refreshed — reload the Signals tab to see updated ranks.")
+        except Exception as exc:
+            prog.empty()
+            st.error(f"Refresh failed: {exc}")
 
     # DB stats
     if DB_PATH.exists():

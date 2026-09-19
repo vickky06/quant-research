@@ -134,6 +134,7 @@ def refresh_symbols(
     symbols: list[str],
     interval: str,
     batch_size: int = 20,
+    on_progress=None,
 ) -> None:
     """Append new bars for each symbol since its last stored date."""
     today = pd.Timestamp.today().normalize()
@@ -181,8 +182,13 @@ def refresh_symbols(
     print(f"[prices] refreshing {len(to_fetch)} symbols (interval={interval})")
 
     total_inserted = 0
+    n_batches = max(1, (len(to_fetch) + batch_size - 1) // batch_size)
     for i in range(0, len(to_fetch), batch_size):
         batch = [s for s in to_fetch[i: i + batch_size]]
+        if on_progress:
+            batch_num = i // batch_size + 1
+            pct = 0.05 + 0.93 * (i / len(to_fetch))
+            on_progress(pct, f"Batch {batch_num}/{n_batches} — {batch[0]} … ({i}/{len(to_fetch)} symbols)")
         # Use the earliest start in the batch
         batch_start = min(symbol_starts[s] for s in batch)
         end = today + pd.Timedelta(days=1)
@@ -252,15 +258,22 @@ def refresh_symbols(
     print(f"[prices] {total_inserted} rows inserted")
 
 
-def run_refresh(interval: str = "1d", fast: bool = False, db_path: Path = DB_PATH) -> None:
-    """Run refresh in-process (no subprocess). Used by app.py to avoid DuckDB lock conflicts."""
+def run_refresh(interval: str = "1d", fast: bool = False,
+                db_path: Path = DB_PATH, on_progress=None) -> None:
+    """Run refresh in-process. on_progress(fraction 0-1, message) is called each batch."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     symbols = get_universe(fast=fast)
+    if on_progress:
+        on_progress(0.02, f"Initialising — {len(symbols)} symbols to check")
     print(f"[refresh] {len(symbols)} symbols  interval={interval}  {datetime.now():%Y-%m-%d %H:%M:%S}")
     con = P._init_db(db_path)
     try:
         refresh_index(con, interval)
-        refresh_symbols(con, symbols, interval)
+        if on_progress:
+            on_progress(0.05, "Index updated — downloading price bars…")
+        refresh_symbols(con, symbols, interval, on_progress=on_progress)
+        if on_progress:
+            on_progress(0.99, "Finalising…")
     finally:
         con.close()
     print("[refresh] done")
