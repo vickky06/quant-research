@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
     mode TEXT NOT NULL,
+    agent TEXT NOT NULL DEFAULT 'momentum',
     universe_size INTEGER,
     params_json TEXT,
     verdict TEXT,
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS run_regimes (
 
 CREATE INDEX IF NOT EXISTS idx_runs_timestamp ON runs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_runs_verdict ON runs(verdict);
+CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent);
 """
 
 
@@ -64,6 +66,7 @@ def _init(db_path: Path) -> sqlite3.Connection:
 def log_run(
     *,
     mode: str,
+    agent: str,
     universe_size: int,
     params: dict,
     verdict: str,
@@ -86,15 +89,16 @@ def log_run(
         cur = con.execute(
             """
             INSERT INTO runs (
-                timestamp, mode, universe_size, params_json, verdict,
+                timestamp, mode, agent, universe_size, params_json, verdict,
                 dsr, sharpe_annualized, cumulative_return, ic_mean,
                 ic_positive_regimes, ic_total_regimes, n_rebalances,
                 n_monthly_observations, avg_turnover, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now().isoformat(timespec="seconds"),
                 mode,
+                agent,
                 universe_size,
                 json.dumps(params),
                 verdict,

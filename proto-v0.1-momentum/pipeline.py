@@ -322,6 +322,76 @@ def compute_momentum(close_wide: pd.DataFrame) -> pd.DataFrame:
     return ranked
 
 
+LOW_VOL_WINDOW_DAYS = 60
+
+
+def compute_low_vol(close_wide: pd.DataFrame) -> pd.DataFrame:
+    """Reference implementation of long-low-vol / short-high-vol.
+
+    RETIRED — failed Gate G1 empirically on Nifty 500 2015-2023
+    (see docs/adr/0002-low-vol-rejected-nifty500.md). Kept for reference
+    only; excluded from the AGENTS registry.
+    """
+    log_returns = np.log(close_wide / close_wide.shift(1))
+    realized_vol = log_returns.rolling(LOW_VOL_WINDOW_DAYS).std() * np.sqrt(252)
+    inverted = -realized_vol
+    ranked = inverted.rank(axis=1, pct=True)
+    return ranked
+
+
+MEAN_REVERSION_WINDOW_DAYS = 20  # ~1 month
+
+
+def compute_mean_reversion(close_wide: pd.DataFrame) -> pd.DataFrame:
+    """Short-term mean reversion — Jegadeesh (1990) "Evidence of Predictable
+    Behavior of Security Returns", JoF.
+
+    Ranks by the *inverse* of the 20-day return: recent losers score high,
+    recent winners score low. Cross-sectionally ranked per date.
+
+    Hypothesis: 1-month returns exhibit negative auto-correlation. This is
+    the direct counterpart to the skip-1-month gap in 12-1 momentum — the
+    reason momentum skips the last month is *because* short-term reversion
+    lives there. That makes this Agent a naturally anti-correlated pair
+    to the momentum Agent, ideal for ensemble diversification.
+    """
+    past_return = close_wide.pct_change(MEAN_REVERSION_WINDOW_DAYS)
+    inverted = -past_return
+    ranked = inverted.rank(axis=1, pct=True)
+    return ranked
+
+
+# Agent registry — each entry is a pure signal-producing function.
+# Retired agents (see docs/adr/) are excluded even if the function still exists.
+AGENTS: dict[str, callable] = {
+    "momentum": compute_momentum,
+    "mean_reversion": compute_mean_reversion,
+}
+
+
+def compute_ensemble(signals_by_agent: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Equal-weight ensemble of per-Agent rank signals.
+
+    Trivial Meta-Learner for v0.2. Later versions replace this with an
+    IC-weighted or regime-conditional weighting scheme.
+
+    All input frames must share the same (date × symbol) grid. Result is
+    the per-cell mean across Agents. Ranks are re-normalized at the end so
+    the ensemble is again in [0, 1] and directly comparable to a single
+    Agent's signal.
+    """
+    if not signals_by_agent:
+        raise ValueError("no signals provided")
+    frames = list(signals_by_agent.values())
+    # Simple average across frames — pandas broadcasts on shared index/columns
+    total = frames[0].copy()
+    for f in frames[1:]:
+        total = total.add(f, fill_value=np.nan)
+    avg = total / len(frames)
+    # Re-rank cross-sectionally so ensemble output is in [0, 1]
+    return avg.rank(axis=1, pct=True)
+
+
 # =============================================================================
 # Regime — 2×2 Vol × Trend
 # =============================================================================
