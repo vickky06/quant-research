@@ -505,7 +505,7 @@ NIFTY500_SECTOR_MAP: dict[str, str] = {
     "CROMPTON.NS": "Industrials", "VOLTAS.NS": "Industrials",
     "BLUESTARCO.NS": "Industrials", "WHIRLPOOL.NS": "Industrials",
     "SYMPHONY.NS": "Industrials", "HAVELLS.NS": "Industrials",
-    "ASIANPAINT.NS": "Industrials", "BERGEPAINT.NS": "Industrials",
+    "ASIANPAINT.NS": "Materials", "BERGEPAINT.NS": "Materials",
     # Communication Services
     "BHARTIARTL.NS": "Communication Services",
     "ZOMATO.NS": "Communication Services", "NYKAA.NS": "Communication Services",
@@ -519,6 +519,74 @@ NIFTY500_SECTOR_MAP: dict[str, str] = {
     "GRASIM.NS": "Materials",
     # Consumer Discretionary (continued)
     "UPL.NS": "Materials",
+    # ── Previously unclassified — added below ──────────────────────────────
+    # Information Technology
+    "BSOFT.NS": "Information Technology", "CYIENT.NS": "Information Technology",
+    "HEXAWARE.NS": "Information Technology", "KPIT.NS": "Information Technology",
+    "LTTS.NS": "Information Technology", "MASTEK.NS": "Information Technology",
+    "NIITLTD.NS": "Information Technology", "RATEGAIN.NS": "Information Technology",
+    "STLTECH.NS": "Information Technology", "TATAELXSI.NS": "Information Technology",
+    "TEJASNET.NS": "Information Technology", "ZENSARTECH.NS": "Information Technology",
+    # Financials
+    "AAVAS.NS": "Financials", "APTUS.NS": "Financials",
+    "AROHAN.NS": "Financials", "AUBANK.NS": "Financials",
+    "BAJAJHLDNG.NS": "Financials", "BANKBARODA.NS": "Financials",
+    "CANBK.NS": "Financials", "CANFINHOME.NS": "Financials",
+    "CREDITACC.NS": "Financials", "DCBBANK.NS": "Financials",
+    "EQUITASBNK.NS": "Financials", "HOMEFIRST.NS": "Financials",
+    "INDIANB.NS": "Financials", "PFC.NS": "Financials",
+    "PNB.NS": "Financials", "RECLTD.NS": "Financials",
+    "REPCO.NS": "Financials", "SPANDANA.NS": "Financials",
+    "UJJIVANSFB.NS": "Financials", "UNIONBANK.NS": "Financials",
+    # Consumer Staples
+    "DMART.NS": "Consumer Staples", "EMAMILTD.NS": "Consumer Staples",
+    "GODFRYPHLP.NS": "Consumer Staples", "JYOTHYLAB.NS": "Consumer Staples",
+    "RADICO.NS": "Consumer Staples", "VARUNBEV.NS": "Consumer Staples",
+    "VBL.NS": "Consumer Staples", "VSTIND.NS": "Consumer Staples",
+    # Consumer Discretionary
+    "AMARAJABAT.NS": "Consumer Discretionary", "ENDURANCE.NS": "Consumer Discretionary",
+    "HAWKINCOOK.NS": "Consumer Discretionary", "JUBILANT.NS": "Consumer Discretionary",
+    "KALYANKJIL.NS": "Consumer Discretionary", "MAHINDCIE.NS": "Consumer Discretionary",
+    "PENIND.NS": "Consumer Discretionary", "PVRINOX.NS": "Consumer Discretionary",
+    "SUNDRMFAST.NS": "Consumer Discretionary", "SUPRAJIT.NS": "Consumer Discretionary",
+    "TTKPRESTIGE.NS": "Consumer Discretionary", "VARDHMANTEXT.NS": "Consumer Discretionary",
+    "WELSPUNLIV.NS": "Consumer Discretionary",
+    # Health Care
+    "ALEMBICPHARM.NS": "Health Care", "APOLLOHOSP.NS": "Health Care",
+    "GLAXO.NS": "Health Care", "JBCHEPHARM.NS": "Health Care",
+    "SANOFI.NS": "Health Care",
+    # Materials
+    "AKZOINDIA.NS": "Materials", "APLAPOLLO.NS": "Materials",
+    "APOLLOPIPE.NS": "Materials", "ASTRAL.NS": "Materials",
+    "CLEAN.NS": "Materials", "GALAXYSURF.NS": "Materials",
+    "GHCL.NS": "Materials", "HEIDELBERG.NS": "Materials",
+    "HINDCOPPER.NS": "Materials", "INDIGOPNTS.NS": "Materials",
+    "JKCEMENT.NS": "Materials", "MAHSEAMLES.NS": "Materials",
+    "RAMCOCEM.NS": "Materials", "SHALPAINTS.NS": "Materials",
+    "SHYAMMETL.NS": "Materials", "SOLARINDS.NS": "Materials",
+    "SRF.NS": "Materials", "SUPREMEIND.NS": "Materials",
+    "TATACHEM.NS": "Materials", "TRIDENT.NS": "Materials",
+    # Industrials
+    "CRAFTSMAN.NS": "Industrials", "ESCORTS.NS": "Industrials",
+    "GMRINFRA.NS": "Industrials", "HGINFRA.NS": "Industrials",
+    "INDIGO.NS": "Industrials", "INOXWIND.NS": "Industrials",
+    "IRB.NS": "Industrials", "LAXMIMACH.NS": "Industrials",
+    "PNCINFRA.NS": "Industrials", "SADBHAV.NS": "Industrials",
+    "SURYAROSNI.NS": "Industrials", "TEXRAIL.NS": "Industrials",
+    "VSTTILLERS.NS": "Industrials",
+    # Communication Services
+    "BSNL.NS": "Communication Services", "IDEA.NS": "Communication Services",
+    "JUSTDIAL.NS": "Communication Services", "MAPDIGITAL.NS": "Communication Services",
+    "NAUKRI.NS": "Communication Services", "RAILTEL.NS": "Communication Services",
+    "SUNTVNETWORK.NS": "Communication Services", "TATACOMM.NS": "Communication Services",
+    "ZEETELE.NS": "Communication Services",
+    # Utilities
+    "ATGL.NS": "Utilities", "GUJGASLTD.NS": "Utilities",
+    "IGL.NS": "Utilities", "MGL.NS": "Utilities",
+    # Real Estate
+    "BRIGADE.NS": "Real Estate", "GODREJPROP.NS": "Real Estate",
+    "OBEROIRLTY.NS": "Real Estate", "PRESTIGE.NS": "Real Estate",
+    "SOBHA.NS": "Real Estate",
 }
 
 

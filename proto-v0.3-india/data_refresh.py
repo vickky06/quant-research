@@ -239,13 +239,8 @@ def refresh_symbols(
         if rows:
             if interval == "1d":
                 con.executemany(
-                    "INSERT OR IGNORE INTO prices VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [(s, d, o, h, lo, c, v) for s, d, o, h, lo, c, v, ac in rows]
-                )
-                con.executemany(
-                    "INSERT OR IGNORE INTO prices (symbol, date, adj_close) "
-                    "VALUES (?, ?, ?) ON CONFLICT (symbol, date) DO UPDATE SET adj_close = excluded.adj_close",
-                    [(s, d, ac) for s, d, o, h, lo, c, v, ac in rows]
+                    "INSERT OR IGNORE INTO prices VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows,
                 )
             else:
                 con.executemany(
