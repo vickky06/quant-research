@@ -1,9 +1,9 @@
 # Strategy Design Contract
 
 **Owner**: Vivek Singh
-**Version**: 1.2
+**Version**: 1.3
 **Created**: 2026-09-19
-**Last amended**: 2026-09-19 (v1.1 → v1.2 — see Amendments at end)
+**Last amended**: 2026-09-19 (v1.2 → v1.3 — see Amendments at end)
 **Purpose**: Immutable contract defining what this quant system is and isn't. Every future decision is tested against this doc. If a proposed change violates the contract, either the change is rejected or the contract is *explicitly amended and versioned* — never silently drifted.
 
 > **The single hardest discipline in retail quant is not tweaking the rules when a backtest disappoints. This document exists to make that discipline enforceable.**
@@ -296,6 +296,36 @@ Once v1 is done and live small money runs for 12 months meeting G5, the system i
 ---
 
 ## Amendments
+
+### v1.2 → v1.3 (2026-09-19)
+
+**Change 1**: §5 Gate G2 DSR criterion corrected from `PSR ≥ 1.0` (impossible — PSR is bounded [0,1]) to `Sharpe_annualized ≥ 1.0 AND PSR ≥ 0.90`.
+
+**Reason**: The prior implementation checked `psr >= 1.0` which is never true for any finite sample Sharpe ratio. Gate G2 was silently always FAIL. Corrected to the intended semantics: annualized Sharpe ≥ 1.0 is the economic criterion; PSR ≥ 0.90 is the statistical confidence gate.
+
+**Justification**: discovered during proto-v0.2-us evaluation. See [ADR-0006](docs/adr/0006-us-pure-price-signals-structural-ceiling.md).
+
+**Gates affected**: G2. Any prior G2 evaluation was vacuously FAIL; this correction makes G2 a meaningful gate going forward.
+
+---
+
+**Change 2**: §6 (Kill Switch / Regime Conditioning) — add regime-conditional hard gate for mean_reversion strategies. In LOW_VOL_UP_TREND regimes, the strategy is flat (0 return) rather than anti-market.
+
+**Reason**: Both India v0.1 and US v0.2 G3 evaluations showed mean_reversion has negative IC in LOW_VOL_UP_TREND (IC ≈ -0.01 to -0.07). The 2024-2026 held-out was predominantly LOW_VOL_UP_TREND, causing -67% cumulative return. Regime-conditional gating is the minimum structural fix.
+
+**Justification**: see [ADR-0007](docs/adr/0007-regime-conditional-gating-for-mean-reversion.md).
+
+**Gates affected**: G1, G2, G3. All gates must be re-run with regime-conditional gating enabled.
+
+---
+
+**Change 3**: §1 — Document US market research findings. S&P 500 pure-price L/S has a structural Sharpe ceiling (~0.35) due to tech-sector dominance. G2 (Sharpe ≥ 1.0) cannot be achieved on this universe without fundamentals data. Russell 2000 pivot authorized for research purposes.
+
+**Reason**: proto-v0.2-us exhaustively tested 6 pure-price signals on S&P 500 with all G1 failures converging on the same structural cause. See [ADR-0006](docs/adr/0006-us-pure-price-signals-structural-ceiling.md).
+
+**Gates affected**: none for existing India research. US research direction clarified.
+
+---
 
 ### v1.1 → v1.2 (2026-09-19)
 
