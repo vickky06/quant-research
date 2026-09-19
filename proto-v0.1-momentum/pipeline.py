@@ -865,6 +865,7 @@ def run_meta_ensemble_backtest(
     max_weight: float | None = None,  # None → dynamic per ADR-0005
     shrinkage: float = META_SHRINKAGE,
     reset_every_months: int = META_RESET_EVERY_MONTHS,
+    heldout_mode: bool = False,
 ) -> MetaEnsembleResult:
     """Backtest the ensemble with a dynamic IC-weighted Meta-Learner.
 
@@ -875,7 +876,8 @@ def run_meta_ensemble_backtest(
       - Forced equal-weight reset every reset_every_months rebalances
       - Warmup with equal weights until ic_window_months rebalances complete
     """
-    assert training_end < HELD_OUT_START, "training/held-out overlap"
+    if not heldout_mode:
+        assert training_end < HELD_OUT_START, "training/held-out overlap"
 
     agent_names = list(signals_by_agent.keys())
     ic_history: dict[str, list[float]] = {a: [] for a in agent_names}

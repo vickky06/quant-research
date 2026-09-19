@@ -1,0 +1,31 @@
+{
+  "verdict": "FAIL",
+  "timestamp": "2026-09-19T19:06:09",
+  "gate": {
+    "verdict": "FAIL",
+    "training_dsr": 0.9962917248111269,
+    "required_heldout_dsr": 0.5977750348866762,
+    "observed_heldout_dsr": 0.36891318079940116,
+    "dsr_pass": false,
+    "threshold_max_dd": 0.25,
+    "observed_max_dd": 0.22588275010728587,
+    "dd_pass": true,
+    "regime_positive": 0,
+    "regime_eligible": 0,
+    "regime_pass": false,
+    "regime_required_positive": 0
+  },
+  "sharpe_annualized": -0.28124955481038616,
+  "cumulative_return": -0.11341994283980383,
+  "mean_ic": -0.010224928881535015,
+  "n_rebalances": 18,
+  "avg_turnover": 0.8657407407407408,
+  "regime_scorecard": {
+    "UNKNOWN": {
+      "ic_mean": -0.010224928881535016,
+      "n_rebalances": 18
+    }
+  },
+  "contract_version": "1.2",
+  "override_used": false
+}

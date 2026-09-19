@@ -196,6 +196,7 @@ def main() -> int:
         training_start=HELD_OUT_START,
         training_end=HELDOUT_END,
         cost_bps=ROUNDTRIP_COST_BPS,
+        heldout_mode=True,
     )
 
     if result.monthly_returns.empty:
