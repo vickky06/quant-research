@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Prototype-local cached data (regenerated on run)
+proto-*/data/
+proto-*/output/
+
+# Persistent run log — local audit trail, not versioned
+# (regenerated from run.py executions; export to CSV/JSON if you want history in git)
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.duckdb
+*.duckdb.wal
+
+# Broker credentials — NEVER commit these
+.env
+.env.local
+*.pem
+*.key
+credentials.json
+secrets.yaml
+
+# Logs
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_meta
+
+# Non-project scratch files (kept locally, not in git)
+/api-runbook.md
+/call-graph.html
+/sequence-diagram.html

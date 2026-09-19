@@ -1,0 +1,603 @@
+"""Pipeline for v0.1 momentum prototype.
+
+Pure-ish functions. No CLI, no orchestration — those live in run.py.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass, asdict
+from datetime import date
+from pathlib import Path
+
+import duckdb
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+
+# =============================================================================
+# Contract-bound constants
+# =============================================================================
+
+TRAINING_START = pd.Timestamp("2015-01-01")
+TRAINING_END = pd.Timestamp("2023-12-31")
+HELD_OUT_START = pd.Timestamp("2024-01-01")
+
+# Data must extend earlier than TRAINING_START for lookback needs (12m momentum + 200d MA)
+DATA_START = pd.Timestamp("2013-01-01")
+
+LIQUIDITY_THRESHOLD_INR = 5_00_00_000  # ₹5 Cr avg daily turnover
+LISTING_YEARS = 3
+PRICE_FLOOR_INR = 50.0
+
+MOMENTUM_LOOKBACK_MONTHS = 12
+MOMENTUM_SKIP_MONTHS = 1
+DECILES = 10
+
+# Regime detection
+VOL_WINDOW_DAYS = 60
+VOL_PERCENTILE_WINDOW_DAYS = 252 * 5  # 5-year rolling
+MA_WINDOW = 200
+TREND_LOOKBACK_DAYS = 20
+
+# Cost model (per contract)
+ROUNDTRIP_COST_BPS = 20  # 0.20% roundtrip
+
+INDEX_TICKER = "^NSEI"  # Nifty 50 as regime proxy — Nifty 500 TR index not reliably on Yahoo
+
+
+# =============================================================================
+# Universe
+# =============================================================================
+
+# Hardcoded fallback: 60 large/mid-caps that consistently have Yahoo data.
+# Used only when nsepython is unavailable or fails.
+FALLBACK_UNIVERSE = [
+    "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "HINDUNILVR", "ITC",
+    "SBIN", "BHARTIARTL", "KOTAKBANK", "LT", "AXISBANK", "ASIANPAINT", "HCLTECH",
+    "MARUTI", "BAJFINANCE", "SUNPHARMA", "TITAN", "WIPRO", "ULTRACEMCO",
+    "NESTLEIND", "NTPC", "POWERGRID", "TECHM", "ONGC",
+    "TATASTEEL", "COALINDIA", "JSWSTEEL", "BAJAJFINSV",
+    "GRASIM", "ADANIPORTS", "BRITANNIA", "BPCL", "CIPLA", "DRREDDY",
+    "EICHERMOT", "HEROMOTOCO", "INDUSINDBK", "APOLLOHOSP",
+    "PIDILITIND", "GODREJCP", "DABUR", "MARICO", "COLPAL",
+    "SIEMENS", "HAVELLS", "BOSCHLTD", "SHREECEM",
+]
+
+
+NIFTY_500_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv"
+
+
+def get_universe(fast: bool = False) -> list[str]:
+    """Return NSE symbols (no .NS suffix)."""
+    if fast:
+        return FALLBACK_UNIVERSE[:30]
+
+    try:
+        import io
+        import requests
+
+        resp = requests.get(
+            NIFTY_500_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=30
+        )
+        resp.raise_for_status()
+        df = pd.read_csv(io.StringIO(resp.text))
+        if "Symbol" in df.columns and len(df) >= 400:
+            symbols = df["Symbol"].astype(str).str.strip().str.upper().tolist()
+            print(f"[universe] fetched {len(symbols)} symbols from Nifty 500 CSV")
+            return symbols
+    except Exception as e:
+        print(f"[universe] Nifty 500 fetch failed ({e!r}); using fallback list")
+
+    return FALLBACK_UNIVERSE
+
+
+def to_yahoo(symbol: str) -> str:
+    return f"{symbol}.NS"
+
+
+# =============================================================================
+# Data ingestion (yfinance → DuckDB)
+# =============================================================================
+
+
+def _init_db(db_path: Path, read_only: bool = False) -> duckdb.DuckDBPyConnection:
+    """Open DuckDB. Writer creates tables; reader opens read_only for concurrency."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if read_only:
+        # Reader must not create tables — assumes writer has already initialized.
+        return duckdb.connect(str(db_path), read_only=True)
+    con = duckdb.connect(str(db_path))
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS prices (
+            symbol VARCHAR,
+            date DATE,
+            open DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
+            close DOUBLE,
+            volume BIGINT,
+            adj_close DOUBLE,
+            PRIMARY KEY (symbol, date)
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS index_prices (
+            symbol VARCHAR,
+            date DATE,
+            close DOUBLE,
+            PRIMARY KEY (symbol, date)
+        )
+    """)
+    return con
+
+
+def _cached_symbols(con: duckdb.DuckDBPyConnection) -> set[str]:
+    rows = con.execute("SELECT DISTINCT symbol FROM prices").fetchall()
+    return {r[0] for r in rows}
+
+
+def download_prices(
+    symbols: list[str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    db_path: Path,
+    batch_size: int = 20,
+) -> None:
+    """Idempotent yfinance → DuckDB. Skips symbols already cached."""
+    import yfinance as yf
+
+    con = _init_db(db_path)
+    cached = _cached_symbols(con)
+    to_fetch = [s for s in symbols if s not in cached]
+
+    if not to_fetch:
+        print(f"[data] all {len(symbols)} symbols cached; skipping download")
+        con.close()
+        return
+
+    print(f"[data] downloading {len(to_fetch)} symbols in batches of {batch_size}")
+
+    for i in range(0, len(to_fetch), batch_size):
+        batch = to_fetch[i : i + batch_size]
+        yahoo_tickers = [to_yahoo(s) for s in batch]
+        try:
+            df = yf.download(
+                yahoo_tickers,
+                start=start.date(),
+                end=end.date(),
+                auto_adjust=False,
+                progress=False,
+                threads=True,
+                group_by="ticker",
+            )
+        except Exception as e:
+            print(f"[data] batch failed ({e!r}); skipping")
+            time.sleep(2)
+            continue
+
+        rows: list[tuple] = []
+        for sym, yahoo in zip(batch, yahoo_tickers):
+            if yahoo not in df.columns.get_level_values(0):
+                continue
+            sub = df[yahoo].dropna(how="all")
+            for dt, r in sub.iterrows():
+                if pd.isna(r.get("Close")):
+                    continue
+                rows.append((
+                    sym,
+                    dt.date(),
+                    float(r.get("Open", np.nan) or 0),
+                    float(r.get("High", np.nan) or 0),
+                    float(r.get("Low", np.nan) or 0),
+                    float(r["Close"]),
+                    int(r.get("Volume", 0) or 0),
+                    float(r.get("Adj Close", r["Close"])),
+                ))
+        if rows:
+            con.executemany(
+                "INSERT OR IGNORE INTO prices VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
+            )
+        print(f"[data]   batch {i // batch_size + 1}: {len(rows)} rows inserted")
+        time.sleep(0.5)  # gentle on yahoo
+
+    con.close()
+
+
+def download_index(db_path: Path, start: pd.Timestamp, end: pd.Timestamp) -> None:
+    """Fetch Nifty 50 index for regime detection."""
+    import yfinance as yf
+
+    con = _init_db(db_path)
+    cached = con.execute(
+        "SELECT COUNT(*) FROM index_prices WHERE symbol = ?", [INDEX_TICKER]
+    ).fetchone()[0]
+    if cached > 100:
+        print(f"[data] index {INDEX_TICKER} cached ({cached} rows); skipping")
+        con.close()
+        return
+
+    df = yf.download(INDEX_TICKER, start=start.date(), end=end.date(), progress=False)
+    rows = []
+    for dt, r in df.iterrows():
+        close = r.get("Close")
+        if isinstance(close, pd.Series):  # multiindex quirk
+            close = close.iloc[0]
+        if pd.isna(close):
+            continue
+        rows.append((INDEX_TICKER, dt.date(), float(close)))
+    con.executemany("INSERT OR IGNORE INTO index_prices VALUES (?, ?, ?)", rows)
+    print(f"[data] index {INDEX_TICKER}: {len(rows)} rows")
+    con.close()
+
+
+def load_prices(db_path: Path, read_only: bool = True) -> pd.DataFrame:
+    """Return long-form: [date, symbol, close, volume, adj_close]."""
+    con = _init_db(db_path, read_only=read_only)
+    df = con.execute(
+        "SELECT symbol, date, close, volume, adj_close FROM prices ORDER BY symbol, date"
+    ).fetchdf()
+    con.close()
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def load_index(db_path: Path, read_only: bool = True) -> pd.Series:
+    con = _init_db(db_path, read_only=read_only)
+    df = con.execute(
+        "SELECT date, close FROM index_prices WHERE symbol = ? ORDER BY date",
+        [INDEX_TICKER],
+    ).fetchdf()
+    con.close()
+    df["date"] = pd.to_datetime(df["date"])
+    return df.set_index("date")["close"]
+
+
+# =============================================================================
+# Universe filters
+# =============================================================================
+
+
+def apply_universe_filters(prices_long: pd.DataFrame) -> pd.DataFrame:
+    """Filter to symbols meeting listing, liquidity, and price rules.
+
+    Contract requires 3-year listing before TRAINING_START. Our data window
+    starts at DATA_START (2 years before TRAINING_START), so we cannot fully
+    verify 3-year listing from data alone. We enforce the observable equivalent:
+    "has data at least 13 months before TRAINING_START" — enough for the
+    momentum lookback plus buffer. Documented in PROTOTYPE_NOTICE.md as a
+    prototype-only relaxation.
+    """
+    close = prices_long.pivot(index="date", columns="symbol", values="adj_close")
+
+    # Require history covering at least momentum lookback + buffer
+    required_history_start = TRAINING_START - pd.DateOffset(months=13)
+    first_seen = close.apply(lambda s: s.first_valid_index())
+    listing_ok = first_seen.apply(
+        lambda fv: pd.notna(fv) and (fv <= required_history_start)
+    )
+
+    eligible_symbols = listing_ok[listing_ok].index.tolist()
+    print(
+        f"[filter] listing filter (>= 13m history at training start): "
+        f"{len(eligible_symbols)} of {len(close.columns)}"
+    )
+
+    return prices_long[prices_long["symbol"].isin(eligible_symbols)].copy()
+
+
+def per_rebalance_universe(
+    close: pd.DataFrame,
+    liquidity_60d: pd.DataFrame,
+    rebalance_date: pd.Timestamp,
+) -> list[str]:
+    """Symbols eligible on this rebalance date."""
+    if rebalance_date not in close.index:
+        return []
+    price_ok = close.loc[rebalance_date] > PRICE_FLOOR_INR
+    if rebalance_date in liquidity_60d.index:
+        liq_ok = liquidity_60d.loc[rebalance_date] > LIQUIDITY_THRESHOLD_INR
+    else:
+        liq_ok = pd.Series(False, index=price_ok.index)
+    return price_ok[price_ok & liq_ok].index.tolist()
+
+
+# =============================================================================
+# Signal — 12-1 momentum
+# =============================================================================
+
+
+def compute_momentum(close_wide: pd.DataFrame) -> pd.DataFrame:
+    """12-1 momentum: return from t-13m to t-1m. Cross-sectionally rank-normalized."""
+    # Approximate months as 21 trading days
+    lookback = MOMENTUM_LOOKBACK_MONTHS * 21
+    skip = MOMENTUM_SKIP_MONTHS * 21
+    past = close_wide.shift(skip)
+    older = close_wide.shift(lookback)
+    raw_momentum = past / older - 1.0
+    # Cross-sectional rank per date, in [0, 1]
+    ranked = raw_momentum.rank(axis=1, pct=True)
+    return ranked
+
+
+# =============================================================================
+# Regime — 2×2 Vol × Trend
+# =============================================================================
+
+
+def compute_regime(index_close: pd.Series) -> pd.DataFrame:
+    """Return DataFrame with columns [vol_regime, trend_regime, regime]."""
+    returns = index_close.pct_change()
+    vol_60d = returns.rolling(VOL_WINDOW_DAYS).std() * np.sqrt(252)
+
+    # Expanding rank until enough history, then rolling 5-year percentile
+    vol_percentile = pd.Series(index=vol_60d.index, dtype=float)
+    for i, dt in enumerate(vol_60d.index):
+        if i < VOL_WINDOW_DAYS:
+            continue
+        window = vol_60d.iloc[max(0, i - VOL_PERCENTILE_WINDOW_DAYS + 1) : i + 1]
+        current = vol_60d.iloc[i]
+        if pd.isna(current) or window.dropna().empty:
+            continue
+        vol_percentile.iloc[i] = (window <= current).mean()
+
+    vol_regime = np.where(vol_percentile < 0.5, "LOW_VOL", "HIGH_VOL")
+
+    ma_200 = index_close.rolling(MA_WINDOW).mean()
+    trend_slope = (ma_200 - ma_200.shift(TREND_LOOKBACK_DAYS)) / ma_200.shift(
+        TREND_LOOKBACK_DAYS
+    )
+    trend_regime = np.where(trend_slope > 0, "UP_TREND", "DOWN_TREND")
+
+    out = pd.DataFrame(
+        {
+            "vol_percentile": vol_percentile,
+            "vol_regime": vol_regime,
+            "trend_slope": trend_slope,
+            "trend_regime": trend_regime,
+        },
+        index=index_close.index,
+    )
+    out["regime"] = out["vol_regime"] + "_" + out["trend_regime"]
+    # Mark early rows (before regime is computable) as UNKNOWN
+    unknown_mask = out["vol_percentile"].isna() | pd.isna(trend_slope)
+    out.loc[unknown_mask, "regime"] = "UNKNOWN"
+    return out
+
+
+# =============================================================================
+# Backtest — decile long-short, monthly rebalance
+# =============================================================================
+
+
+def month_end_dates(index: pd.DatetimeIndex) -> list[pd.Timestamp]:
+    """Last trading day of each calendar month in the (trading-day) index."""
+    if len(index) == 0:
+        return []
+    df = pd.DataFrame({"date": pd.DatetimeIndex(index)})
+    df["period"] = df["date"].dt.to_period("M")
+    return df.groupby("period")["date"].max().tolist()
+
+
+@dataclass
+class BacktestResult:
+    monthly_returns: pd.Series  # net-of-cost long-short monthly returns
+    signal_at_rebalance: dict  # {date: {symbol: rank}}
+    forward_returns: dict  # {date: {symbol: 1-month forward return}}
+    regime_at_rebalance: pd.Series  # {date: regime}
+    turnover: pd.Series  # per rebalance turnover fraction
+
+
+def run_backtest(
+    close_wide: pd.DataFrame,
+    momentum: pd.DataFrame,
+    liquidity_60d: pd.DataFrame,
+    regime_df: pd.DataFrame,
+    training_start: pd.Timestamp,
+    training_end: pd.Timestamp,
+    cost_bps: int,
+) -> BacktestResult:
+    """Monthly rebalance decile long-short. Enforces training bounds."""
+    assert training_end < HELD_OUT_START, "training bounds violate held-out lock"
+
+    dates = close_wide.index
+    rebalance_dates = [
+        d for d in month_end_dates(dates) if training_start <= d <= training_end
+    ]
+
+    monthly_returns = []
+    signals_snapshot: dict = {}
+    fwd_snapshot: dict = {}
+    regime_snapshot = {}
+    turnovers = []
+
+    prev_long: set[str] = set()
+    prev_short: set[str] = set()
+
+    # Minimum universe for a valid rebalance: 20 stocks, or 50% of the
+    # potentially-eligible pool, whichever is smaller. Prototype-appropriate.
+    min_eligible = min(20, max(10, close_wide.shape[1] // 2))
+
+    for i, rb in enumerate(rebalance_dates[:-1]):
+        next_rb = rebalance_dates[i + 1]
+        elig = per_rebalance_universe(close_wide, liquidity_60d, rb)
+        if len(elig) < min_eligible:
+            continue
+
+        momo_today = momentum.loc[rb, elig].dropna()
+        if len(momo_today) < min_eligible:
+            continue
+
+        # Recompute rank inside eligible universe only (contract-clean)
+        momo_ranked = momo_today.rank(pct=True)
+        n = len(momo_ranked)
+        top_cut = 1.0 - 1.0 / DECILES
+        bot_cut = 1.0 / DECILES
+        long_names = momo_ranked[momo_ranked >= top_cut].index.tolist()
+        short_names = momo_ranked[momo_ranked <= bot_cut].index.tolist()
+
+        # Forward returns from rb to next_rb using adj_close
+        fwd = (close_wide.loc[next_rb, elig] / close_wide.loc[rb, elig] - 1.0).dropna()
+
+        long_ret = fwd.reindex(long_names).mean()
+        short_ret = fwd.reindex(short_names).mean()
+        gross_ls = long_ret - short_ret
+
+        # Turnover: fraction of new names in long+short vs previous
+        new_long = len(set(long_names) - prev_long) / max(len(long_names), 1)
+        new_short = len(set(short_names) - prev_short) / max(len(short_names), 1)
+        turnover_fraction = 0.5 * (new_long + new_short)
+        cost = turnover_fraction * (cost_bps / 10_000.0)
+
+        net_ls = gross_ls - cost
+
+        monthly_returns.append((rb, net_ls))
+        signals_snapshot[rb.strftime("%Y-%m-%d")] = momo_ranked.to_dict()
+        fwd_snapshot[rb.strftime("%Y-%m-%d")] = fwd.to_dict()
+        regime_snapshot[rb] = (
+            regime_df.loc[rb, "regime"] if rb in regime_df.index else "UNKNOWN"
+        )
+        turnovers.append((rb, turnover_fraction))
+
+        prev_long = set(long_names)
+        prev_short = set(short_names)
+
+    if not monthly_returns:
+        raise RuntimeError("no rebalances produced returns — check data / filters")
+
+    idx, vals = zip(*monthly_returns)
+    mr = pd.Series(vals, index=pd.DatetimeIndex(idx), name="ls_return")
+    reg_ser = pd.Series(regime_snapshot, name="regime")
+    tv_idx, tv_vals = zip(*turnovers)
+    tv = pd.Series(tv_vals, index=pd.DatetimeIndex(tv_idx), name="turnover")
+
+    return BacktestResult(
+        monthly_returns=mr,
+        signal_at_rebalance=signals_snapshot,
+        forward_returns=fwd_snapshot,
+        regime_at_rebalance=reg_ser,
+        turnover=tv,
+    )
+
+
+# =============================================================================
+# Metrics — IC, DSR (PSR), Regime Scorecard
+# =============================================================================
+
+
+def compute_ic_per_rebalance(
+    signals: dict, forwards: dict
+) -> pd.Series:
+    """Spearman rank IC per rebalance."""
+    out = {}
+    for d, sig in signals.items():
+        fwd = forwards.get(d, {})
+        common = sig.keys() & fwd.keys()
+        if len(common) < 20:
+            continue
+        s = np.array([sig[c] for c in common])
+        f = np.array([fwd[c] for c in common])
+        if np.std(s) == 0 or np.std(f) == 0:
+            continue
+        rho, _ = stats.spearmanr(s, f)
+        out[pd.Timestamp(d)] = float(rho)
+    return pd.Series(out, name="ic").sort_index()
+
+
+def compute_regime_scorecard(
+    ic_series: pd.Series, regime_at_rebalance: pd.Series
+) -> pd.DataFrame:
+    df = pd.DataFrame({"ic": ic_series, "regime": regime_at_rebalance}).dropna()
+    grouped = df.groupby("regime")["ic"].agg(["mean", "count"])
+    return grouped
+
+
+def compute_dsr(returns: pd.Series, benchmark_sr: float = 0.0) -> dict:
+    """Probabilistic Sharpe Ratio (Bailey-López de Prado 2012/2014).
+
+    With N=1 trial, PSR ≈ DSR. Returns dict with sharpe, psr, and inputs.
+    Monthly returns → Sharpe annualized by sqrt(12).
+    """
+    r = returns.dropna()
+    T = len(r)
+    if T < 12:
+        return {"sharpe_annualized": float("nan"), "psr": float("nan"), "T": T}
+
+    mean_r = r.mean()
+    std_r = r.std(ddof=1)
+    if std_r == 0:
+        return {"sharpe_annualized": 0.0, "psr": 0.0, "T": T}
+    sr_monthly = mean_r / std_r
+    sr_ann = sr_monthly * np.sqrt(12)
+
+    skew = float(stats.skew(r, bias=False))
+    excess_kurt = float(stats.kurtosis(r, fisher=True, bias=False))  # excess (γ4 - 3)
+
+    # PSR formula uses (γ_4 - 1)/4 where γ_4 is raw kurtosis (not excess).
+    # Convert: raw_kurt = excess_kurt + 3, so (γ_4 - 1)/4 = (excess_kurt + 2)/4
+    denom = np.sqrt(1 - skew * sr_monthly + ((excess_kurt + 2) / 4.0) * sr_monthly**2)
+    if denom <= 0 or np.isnan(denom):
+        return {"sharpe_annualized": float(sr_ann), "psr": float("nan"), "T": T}
+    z = (sr_monthly - benchmark_sr) * np.sqrt(T - 1) / denom
+    psr = float(stats.norm.cdf(z))
+
+    return {
+        "sharpe_monthly": float(sr_monthly),
+        "sharpe_annualized": float(sr_ann),
+        "psr": psr,
+        "T": T,
+        "skew": skew,
+        "excess_kurtosis": excess_kurt,
+    }
+
+
+# =============================================================================
+# Gate G1
+# =============================================================================
+
+
+def evaluate_gate_g1(
+    dsr_result: dict, scorecard: pd.DataFrame, threshold_dsr: float = 0.5
+) -> dict:
+    dsr = dsr_result.get("psr", 0.0)
+    dsr_pass = dsr >= threshold_dsr
+
+    # Filter to real regimes (drop UNKNOWN)
+    real = scorecard.drop(index="UNKNOWN", errors="ignore")
+    positive = (real["mean"] > 0).sum()
+    total = len(real)
+    regime_pass = positive >= 3 and total >= 3
+
+    verdict = "PASS" if (dsr_pass and regime_pass) else "FAIL"
+
+    return {
+        "verdict": verdict,
+        "threshold_dsr": threshold_dsr,
+        "observed_dsr_psr": dsr,
+        "dsr_pass": bool(dsr_pass),
+        "regime_pass": bool(regime_pass),
+        "regime_positive_count": int(positive),
+        "regime_total_evaluated": int(total),
+        "sharpe_annualized": dsr_result.get("sharpe_annualized"),
+        "num_monthly_observations": dsr_result.get("T"),
+    }
+
+
+# =============================================================================
+# Serialization helpers
+# =============================================================================
+
+
+def save_json(obj, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2, default=str)
+
+
+def scorecard_to_dict(scorecard: pd.DataFrame) -> dict:
+    return {
+        regime: {"ic_mean": float(row["mean"]), "n_rebalances": int(row["count"])}
+        for regime, row in scorecard.iterrows()
+    }
