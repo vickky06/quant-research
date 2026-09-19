@@ -1,0 +1,69 @@
+{
+  "verdict": "PASS",
+  "timestamp": "2026-09-19T23:26:16",
+  "gate": {
+    "verdict": "PASS",
+    "training_dsr": 0.9999344882936892,
+    "required_heldout_dsr": 0.5999606929762136,
+    "observed_heldout_dsr": 0.9032904140134556,
+    "dsr_pass": true,
+    "threshold_max_dd": 0.25,
+    "observed_max_dd": 0.09093309641196035,
+    "dd_pass": true,
+    "regime_positive": 2,
+    "regime_eligible": 2,
+    "regime_pass": true,
+    "regime_required_positive": 2
+  },
+  "sharpe_annualized": 0.8724165924524918,
+  "cumulative_return": 0.22730241797152506,
+  "mean_ic": 0.03505237812678989,
+  "n_rebalances": 29,
+  "avg_turnover": 0.7723563218390802,
+  "regime_scorecard": {
+    "HIGH_VOL_DOWN_TREND": {
+      "ic_mean": 0.05134709552382506,
+      "n_rebalances": 5
+    },
+    "HIGH_VOL_UP_TREND": {
+      "ic_mean": 0.008718112647157994,
+      "n_rebalances": 12
+    },
+    "LOW_VOL_UP_TREND": {
+      "ic_mean": 0.05459717802432381,
+      "n_rebalances": 12
+    }
+  },
+  "strategy": {
+    "signals": [
+      "mean_reversion",
+      "sector_neutral_mr",
+      "momentum"
+    ],
+    "regime_signal_weights": {
+      "HIGH_VOL_DOWN_TREND": {
+        "mean_reversion": 0.45,
+        "sector_neutral_mr": 0.45,
+        "momentum": 0.1
+      },
+      "HIGH_VOL_UP_TREND": {
+        "mean_reversion": 0.15,
+        "sector_neutral_mr": 0.2,
+        "momentum": 0.65
+      },
+      "LOW_VOL_UP_TREND": {
+        "mean_reversion": 0.15,
+        "sector_neutral_mr": 0.2,
+        "momentum": 0.65
+      },
+      "LOW_VOL_DOWN_TREND": {
+        "mean_reversion": 0.45,
+        "sector_neutral_mr": 0.45,
+        "momentum": 0.1
+      }
+    },
+    "skip_regimes": []
+  },
+  "contract_version": "1.3",
+  "override_used": false
+}
