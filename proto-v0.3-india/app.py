@@ -770,5 +770,6 @@ with tab_pg:
             st.dataframe(pd.DataFrame(comparison_rows), use_container_width=True, hide_index=True)
 
         if st.button("🗑️ Clear Playground"):
-            del st.session_state["pg_scenarios"]
+            for _k in [k for k in st.session_state if k.startswith("pg_")]:
+                del st.session_state[_k]
             st.rerun()
