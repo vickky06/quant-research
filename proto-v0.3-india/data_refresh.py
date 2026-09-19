@@ -252,6 +252,20 @@ def refresh_symbols(
     print(f"[prices] {total_inserted} rows inserted")
 
 
+def run_refresh(interval: str = "1d", fast: bool = False, db_path: Path = DB_PATH) -> None:
+    """Run refresh in-process (no subprocess). Used by app.py to avoid DuckDB lock conflicts."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    symbols = get_universe(fast=fast)
+    print(f"[refresh] {len(symbols)} symbols  interval={interval}  {datetime.now():%Y-%m-%d %H:%M:%S}")
+    con = P._init_db(db_path)
+    try:
+        refresh_index(con, interval)
+        refresh_symbols(con, symbols, interval)
+    finally:
+        con.close()
+    print("[refresh] done")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Incremental price refresh")
     parser.add_argument("--interval", default="1d",

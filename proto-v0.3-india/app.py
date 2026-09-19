@@ -13,7 +13,6 @@ Tabs:
 from __future__ import annotations
 
 import csv
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +44,7 @@ from pipeline import (
     get_sector_map, get_universe, load_index, load_prices,
 )
 from run import REGIME_SIGNAL_WEIGHTS, SKIP_REGIMES
+from data_refresh import run_refresh
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -192,19 +192,17 @@ with tab_data:
     fast_mode = col2.checkbox("Fast mode (50 tickers)", value=False)
 
     if st.button("🔄 Refresh Data", type="primary"):
-        with st.spinner("Downloading new bars..."):
-            cmd = [sys.executable, str(ROOT / "data_refresh.py"), "--interval", interval]
-            if fast_mode:
-                cmd.append("--fast")
-            result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
-        if result.returncode == 0:
-            st.success("Data refreshed!")
-            st.code(result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout)
-            _load_prices_cached.clear()
-            _load_signals_cached.clear()
-        else:
-            st.error("Refresh failed")
-            st.code(result.stderr[-1000:])
+        # Clear cache first so no open DB connections linger before refresh
+        _load_prices_cached.clear()
+        _load_signals_cached.clear()
+        with st.spinner("Downloading new bars… (progress in terminal)"):
+            try:
+                run_refresh(interval=interval, fast=fast_mode)
+                _load_prices_cached.clear()
+                _load_signals_cached.clear()
+                st.success("Data refreshed — reload the Signals tab to see updated ranks.")
+            except Exception as exc:
+                st.error(f"Refresh failed: {exc}")
 
     # DB stats
     if DB_PATH.exists():
@@ -364,9 +362,16 @@ with tab_trades:
 
     # ── Enter trade ──────────────────────────────────────────────────────────
     with st.expander("➕ Enter new position", expanded=open_df.empty):
+        universe_syms = sorted(get_universe())
+        CUSTOM_OPT = "✏️  Type custom symbol below..."
+        sym_options = universe_syms + [CUSTOM_OPT]
+
         with st.form("enter_trade"):
             c1, c2, c3, c4 = st.columns(4)
-            sym = c1.text_input("Symbol (e.g. RELIANCE.NS)")
+            sym_sel = c1.selectbox("Symbol (universe)", sym_options,
+                                   help="Start typing to filter. Choose last option to enter any ticker.")
+            sym_custom = c1.text_input("Custom symbol", placeholder="e.g. NIFTY50.NS",
+                                       help="Used only when 'Type custom' is selected above.")
             direction = c2.selectbox("Direction", ["long", "short"])
             qty = c3.number_input("Quantity", min_value=1, value=100, step=1)
             price = c4.number_input("Entry price (₹)", min_value=0.01, value=100.0, step=0.05)
@@ -374,10 +379,20 @@ with tab_trades:
             submitted = st.form_submit_button("Enter Trade", type="primary")
 
             if submitted:
-                if not sym.strip():
-                    st.error("Symbol is required")
+                sym = (sym_custom.strip().upper()
+                       if sym_sel == CUSTOM_OPT
+                       else sym_sel)
+                if not sym:
+                    st.error("Symbol is required — pick from list or enter a custom symbol.")
                 else:
-                    sym = sym.strip().upper()
+                    # Validate ticker has price data
+                    live = _live_price(sym)
+                    if live is None and sym not in universe_syms:
+                        st.warning(
+                            f"⚠️ Could not fetch a live price for **{sym}**. "
+                            "Double-check the ticker (NSE symbols end in `.NS`). "
+                            "Trade logged anyway — P&L will show '—' until data is available."
+                        )
                     trades_df = _load_trades()
                     new_row = {
                         "id": str(_next_id(trades_df)),
@@ -391,7 +406,8 @@ with tab_trades:
                         [trades_df, pd.DataFrame([new_row])], ignore_index=True
                     )
                     _save_trades(trades_df)
-                    st.success(f"Entered {direction.upper()} {qty}× {sym} @ ₹{price:.2f}")
+                    price_str = f"₹{live:.2f} live" if live else f"₹{price:.2f} manual"
+                    st.success(f"Entered {direction.upper()} {qty}× {sym} @ {price_str}")
                     st.rerun()
 
     # ── Open positions ────────────────────────────────────────────────────────
