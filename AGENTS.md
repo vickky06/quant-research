@@ -24,6 +24,8 @@ These are stated as rules because they are the single-largest source of failure 
 
 If you find yourself wanting to "just check" the held-out set, stop. That is the failure mode.
 
+**Mechanical enforcement**: `proto-v0.1-momentum/run_held_out.py` is the only script that touches held-out data. It refuses to run without `--confirm-final-evaluation` and refuses to overwrite an existing verdict without a deliberately embarrassing override flag. Verdict files live in `docs/heldout/verdict.{md,json}` and are tracked in git as the permanent contractual record. If you see the override flag being invoked, or `HELDOUT_OVERRIDE.md` at the workspace root, you're in contract-violation territory.
+
 ### 2. Gates gate
 
 If a gate fails:

@@ -1114,6 +1114,129 @@ def summarize_walkforward(folds: pd.DataFrame) -> dict:
     }
 
 
+# =============================================================================
+# Purged K-Fold Cross-Validation (López de Prado 2018)
+# =============================================================================
+
+
+def purged_kfold_splits(
+    rebalance_dates: list[pd.Timestamp],
+    n_splits: int = 5,
+    purge_months: int = 13,
+    embargo_months: int = 1,
+) -> list[tuple[list[pd.Timestamp], list[pd.Timestamp]]]:
+    """Purged K-Fold split for time-series backtests.
+
+    Standard k-fold leaks in time-series because samples adjacent to a
+    test fold often share information (lookbacks like 12-month momentum
+    span multiple rebalances). We remove observations within `purge_months`
+    of any test-fold boundary from the training set, plus `embargo_months`
+    of post-test observations.
+
+    Args:
+        rebalance_dates: sequential Rebalance timestamps (monthly).
+        n_splits: number of folds (default 5).
+        purge_months: how many months of pre-test observations to drop
+            from train (should cover signal lookback; momentum uses 13m).
+        embargo_months: post-test months to also drop from train
+            (accounts for forward-return leakage).
+
+    Returns:
+        List of (train_dates, test_dates) tuples, one per fold.
+    """
+    n = len(rebalance_dates)
+    if n < n_splits * 2:
+        raise ValueError(f"need at least {n_splits * 2} rebalances, got {n}")
+    fold_size = n // n_splits
+    splits = []
+    for k in range(n_splits):
+        test_start = k * fold_size
+        test_end = (k + 1) * fold_size if k < n_splits - 1 else n
+        test = rebalance_dates[test_start:test_end]
+
+        test_start_date = test[0]
+        test_end_date = test[-1]
+        train = []
+        for d in rebalance_dates:
+            if d in test:
+                continue
+            # Purge: drop if within purge_months of test start
+            months_from_test_start = (
+                (test_start_date.year - d.year) * 12
+                + (test_start_date.month - d.month)
+            )
+            if 0 < months_from_test_start <= purge_months:
+                continue
+            # Embargo: drop if in the embargo window after test
+            months_from_test_end = (
+                (d.year - test_end_date.year) * 12
+                + (d.month - test_end_date.month)
+            )
+            if 0 < months_from_test_end <= embargo_months:
+                continue
+            train.append(d)
+        splits.append((train, test))
+    return splits
+
+
+# =============================================================================
+# Gate G3 (Held-out) evaluation
+# =============================================================================
+
+
+def evaluate_gate_g3(
+    training_dsr: float,
+    heldout_dsr_result: dict,
+    heldout_dd_result: dict,
+    heldout_scorecard: pd.DataFrame,
+    training_dsr_threshold_ratio: float = 0.6,
+    threshold_max_dd: float = 0.25,
+    min_regime_n: int = MIN_REGIME_REBALANCES,
+) -> dict:
+    """Gate G3 per contract §5 (v1.2).
+
+    - Realized DSR on held-out ≥ 60% of training DSR
+    - Max DD ≤ 25% on held-out
+    - Positive IC in ≥ (eligible_regimes - 1) of eligible regimes,
+      where eligible regimes have n ≥ min_regime_n
+
+    The 60% degradation floor is contract-native: it acknowledges that
+    static-backtest DSR *over-estimates* real edge (multi-trial + selection).
+    A realized held-out DSR of at least 60% of training suggests the edge
+    survives out-of-sample; a lower value suggests overfit.
+    """
+    ho_dsr = heldout_dsr_result.get("psr", 0.0)
+    required_dsr = training_dsr * training_dsr_threshold_ratio
+    dsr_pass = ho_dsr >= required_dsr
+
+    ho_dd = abs(heldout_dd_result.get("max_drawdown", 0.0))
+    dd_pass = ho_dd <= threshold_max_dd
+
+    real = heldout_scorecard.drop(index="UNKNOWN", errors="ignore")
+    eligible = real[real["count"] >= min_regime_n]
+    eligible_total = int(len(eligible))
+    positive = int((eligible["mean"] > 0).sum())
+    required_positive = eligible_total - 1 if eligible_total >= 3 else eligible_total
+    regime_pass = eligible_total >= 2 and positive >= required_positive
+
+    verdict = "PASS" if (dsr_pass and dd_pass and regime_pass) else "FAIL"
+
+    return {
+        "verdict": verdict,
+        "training_dsr": float(training_dsr),
+        "required_heldout_dsr": float(required_dsr),
+        "observed_heldout_dsr": float(ho_dsr),
+        "dsr_pass": bool(dsr_pass),
+        "threshold_max_dd": float(threshold_max_dd),
+        "observed_max_dd": float(ho_dd),
+        "dd_pass": bool(dd_pass),
+        "regime_positive": positive,
+        "regime_eligible": eligible_total,
+        "regime_pass": bool(regime_pass),
+        "regime_required_positive": required_positive,
+    }
+
+
 def evaluate_gate_g2(
     dsr_result: dict, dd_result: dict,
     threshold_dsr: float = 1.0, threshold_max_dd: float = 0.25,
