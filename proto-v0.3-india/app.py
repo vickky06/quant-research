@@ -178,6 +178,68 @@ tab_data, tab_signals, tab_trades, tab_perf, tab_pg = st.tabs(
     ["📁 Data", "📈 Signals", "📝 Trades", "💰 Performance", "🧪 Playground"]
 )
 
+# ── Sidebar glossary ──────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("## 📖 Glossary")
+    st.markdown("""
+**Regime**
+Market environment detected from Nifty 50. Drives which signals get higher weight.
+4 regimes: `LOW/HIGH_VOL` × `UP/DOWN_TREND`.
+
+---
+**Signal score (0 → 1)**
+Percentile rank of a stock across the universe.
+`1.0` = ranked #1, `0.0` = ranked last.
+≥ 0.90 → long candidate. ≤ 0.10 → short candidate.
+
+---
+**mean_reversion**
+Stocks that fell significantly relative to their 20-day average are expected to bounce back.
+Works best in down-trend regimes.
+
+---
+**sector_neutral_mr**
+Same as mean-reversion but compares each stock only against peers in its GICS sector.
+Removes market-wide sector moves from the signal — e.g. if all IT stocks sold off, it won't flag every IT stock as a bounce candidate.
+
+---
+**momentum (12-1)**
+Stocks with strong 12-month returns (excluding last month) tend to keep outperforming.
+Works best in up-trend regimes.
+
+---
+**IC (Information Coefficient)**
+Rank correlation between signal score and actual next-period returns. Range −1 to +1.
+`IC = 0.05` means the signal explains ~5% of return variation — modest but profitable at scale.
+
+---
+**Composite score**
+Weighted blend of all 3 signals using regime-conditional weights. This is what the ranked tables show.
+
+---
+**R:R (Reward-to-Risk)**
+`(Target P&L) ÷ (Stop P&L)`. Aim for ≥ 2x — meaning you expect to make at least twice what you're willing to lose.
+
+---
+**DSR (Deflated Sharpe Ratio)**
+Sharpe ratio adjusted for the number of strategies tested and non-normality of returns.
+More honest than raw Sharpe. DSR ≥ 0.5 means the edge is likely real.
+
+---
+**Paper trade**
+A simulated trade with no real money. You execute it manually on Zerodha but log it here to track if the algo's signals lead to real profits before committing capital.
+
+---
+**Notional**
+Total ₹ value of a position = entry price × quantity.
+
+---
+**NSE ticker format**
+Indian stocks on yfinance use `.NS` suffix: `RELIANCE.NS`, `TCS.NS`.
+    """)
+    st.markdown("---")
+    st.caption("India v0.3 · Nifty 500 · 3-signal ensemble")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Data
@@ -185,6 +247,20 @@ tab_data, tab_signals, tab_trades, tab_perf, tab_pg = st.tabs(
 
 with tab_data:
     st.subheader("Price Database")
+    with st.expander("ℹ️ How to use this tab", expanded=False):
+        st.markdown("""
+**Data tab** keeps the local price database up to date. Nothing else in the app works without fresh data.
+
+| Step | What to do |
+|---|---|
+| 1 | Leave **Interval** as `1d` (daily). The signals were trained on daily bars — intraday is for monitoring only. |
+| 2 | Leave **Fast mode** off unless you want a quick test with 50 tickers. |
+| 3 | Click **Refresh Data**. A progress bar shows each batch. First run takes ~2 min; subsequent runs only fetch new days (incremental). |
+| 4 | Check the metrics row — **Latest date** should be yesterday (NSE data lags ~1 day on yfinance). |
+
+The price chart at the bottom lets you inspect any symbol's history.
+        """)
+
 
     col1, col2, col3 = st.columns([1, 1, 2])
 
@@ -245,6 +321,29 @@ with tab_data:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_signals:
+    with st.expander("ℹ️ How to use this tab", expanded=False):
+        st.markdown("""
+**Signals tab** is the algo output — what the model thinks you should be long or short today.
+
+**Reading the regime:**
+The coloured badge shows the current market regime detected from Nifty 50 volatility + trend.
+The regime determines which signals get more weight:
+- 🔵 `LOW_VOL_DOWN_TREND` / 🔴 `HIGH_VOL_DOWN_TREND` → Mean-reversion heavy (stocks that fell hard tend to bounce)
+- 🟢 `LOW_VOL_UP_TREND` / 🟠 `HIGH_VOL_UP_TREND` → Momentum heavy (recent winners keep winning)
+
+**Reading the scores (0 → 1):**
+Each stock gets a percentile score across the universe. Score = 1.0 means it ranked #1 across all three signals.
+- **≥ 0.90** → strong long candidate
+- **≤ 0.10** → strong short candidate
+- Scores near 0.5 → no edge, ignore
+
+**Practical workflow:**
+1. Check the regime — if `SKIP` is shown, the model has low confidence and you should stay flat.
+2. Scan the top 5–10 longs and shorts. Cross-check with news/fundamentals before acting.
+3. Use the **Playground tab** to simulate a position before committing to a paper trade.
+4. The **Per-signal breakdown** expander shows which of the 3 signals drove each stock's rank.
+        """)
+
     if not DB_PATH.exists():
         st.warning("Run data refresh first.")
     else:
@@ -364,6 +463,31 @@ with tab_signals:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_trades:
+    with st.expander("ℹ️ How to use this tab", expanded=False):
+        st.markdown("""
+**Trades tab** is your paper trading journal. No broker connection needed — you record trades manually after executing them yourself on Zerodha.
+
+**Entering a trade:**
+1. Pick a symbol from the dropdown (275 NSE stocks) or choose "Type custom" for anything else.
+2. Set **Direction**: Long = you bought it expecting it to rise. Short = you sold/shorted expecting it to fall.
+3. Enter the **actual price you paid** on Zerodha (not the signal price).
+4. **Quantity** = number of shares.
+5. Click **Enter Trade**. The trade is saved locally to `output/paper_trades.csv`.
+
+**Open positions panel:**
+- Live price is fetched from yfinance every time the page loads.
+- **Unrealised P&L** = (live price − entry price) × qty (for longs), reversed for shorts.
+
+**Closing a trade:**
+1. After you sell/cover on Zerodha, come back here.
+2. In the **Close a position** section, pick the symbol and enter your actual exit price.
+3. P&L is calculated and recorded permanently.
+
+**Tips:**
+- Use **Notes** to record why you took the trade (e.g. "pg#2 score=0.984 regime=LOW_VOL_DOWN")
+- Trades promoted from the Playground tab auto-fill the notes with the signal metadata.
+        """)
+
     trades_df = _load_trades()
     open_df = trades_df[trades_df["status"] == "open"] if not trades_df.empty else pd.DataFrame()
 
@@ -489,6 +613,23 @@ with tab_trades:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_perf:
+    with st.expander("ℹ️ How to use this tab", expanded=False):
+        st.markdown("""
+**Performance tab** tracks your closed paper trades over time. Only trades you have entered AND closed appear here.
+
+| Metric | What it means |
+|---|---|
+| **Total P&L** | Sum of all realised profits and losses in ₹ |
+| **Win rate** | % of trades that closed in profit |
+| **Avg win / Avg loss** | Average profit on winners vs average loss on losers |
+| **R:R implied** | Avg win ÷ Avg loss — target > 1.5x |
+
+**Equity curve** — cumulative P&L over time. A rising line means the strategy is working in practice.
+
+**Goal of paper trading:** Run at least 6 months (≈ 6 monthly rebalances) before committing real capital.
+Watch for: consistent win rate ≥ 50%, R:R > 1.5x, no single trade losing more than 10% of notional.
+        """)
+
     trades_df = _load_trades()
     closed_df = trades_df[trades_df["status"] == "closed"].copy() if not trades_df.empty else pd.DataFrame()
 
@@ -568,11 +709,28 @@ _REGIME_IC: dict[str, float] = {
 
 with tab_pg:
     st.subheader("Signal Playground")
-    st.caption(
-        "Seed up to 6 scenarios from current signals. Each card shows **why** the algo "
-        "ranked that stock and what return to expect. Edit any parameter — P&L recalculates "
-        "live. Promote the best scenario to a real paper trade."
-    )
+    with st.expander("ℹ️ How to use this tab", expanded=False):
+        st.markdown("""
+**Playground tab** lets you simulate trades before committing to the real paper trade journal.
+It seeds scenarios directly from the algo's current signal rankings.
+
+**Step-by-step:**
+1. Choose **3 or 6 scenarios** and click **Generate Playground**.
+   - Top half = long candidates (highest composite scores)
+   - Bottom half = short candidates (lowest composite scores)
+2. Each card shows:
+   - **Signal breakdown table** — how each of the 3 signals scored this stock and how much it contributed.
+     A stock ranked 95th percentile by mean-reversion gets `Rank % = 95%`. Multiply by weight to get contribution.
+   - **IC-implied target** — based on historical Information Coefficient for the current regime.
+     IC = 0.055 in LOW_VOL_UP_TREND means the model's picks historically moved ~5% in the right direction over 20 days.
+   - **Stop price** — default 3% against you. Adjust to your risk tolerance.
+3. Edit **Entry, Target, Stop, Qty, Hold days** — the **At target** and **At stop** P&L update instantly.
+4. Check **R:R** (reward-to-risk). Aim for ≥ 2x before promoting.
+5. Click **→ Promote to Paper Trade** on the best scenario. It moves to the Trades tab with signal metadata in Notes.
+
+**Scenarios are session-only** — they reset on page refresh. Use the Trades tab for real tracking.
+        """)
+
 
     pg_n = st.selectbox("Scenarios to generate", [3, 6], index=1, key="pg_n_select")
     if st.button("🎲 Generate Playground", type="primary"):
