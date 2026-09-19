@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS runs (
     n_rebalances INTEGER,
     n_monthly_observations INTEGER,
     avg_turnover REAL,
+    max_drawdown REAL,
+    max_dd_duration_months INTEGER,
+    max_dd_recovery_months INTEGER,
     notes TEXT
 );
 
@@ -80,6 +83,9 @@ def log_run(
     n_monthly_observations: int,
     avg_turnover: float,
     scorecard: dict,
+    max_drawdown: float = 0.0,
+    max_dd_duration_months: int | None = None,
+    max_dd_recovery_months: int | None = None,
     notes: str = "",
     db_path: Path = DEFAULT_LOG_PATH,
 ) -> int:
@@ -92,8 +98,10 @@ def log_run(
                 timestamp, mode, agent, universe_size, params_json, verdict,
                 dsr, sharpe_annualized, cumulative_return, ic_mean,
                 ic_positive_regimes, ic_total_regimes, n_rebalances,
-                n_monthly_observations, avg_turnover, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                n_monthly_observations, avg_turnover,
+                max_drawdown, max_dd_duration_months, max_dd_recovery_months,
+                notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now().isoformat(timespec="seconds"),
@@ -111,6 +119,9 @@ def log_run(
                 int(n_rebalances),
                 int(n_monthly_observations),
                 float(avg_turnover),
+                float(max_drawdown),
+                max_dd_duration_months,
+                max_dd_recovery_months,
                 notes,
             ),
         )

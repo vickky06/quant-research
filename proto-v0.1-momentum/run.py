@@ -82,6 +82,7 @@ def run_for_signal(
     scorecard = P.compute_regime_scorecard(ic_series, result.regime_at_rebalance)
     dsr_result = compute_dsr(result.monthly_returns)
     gate = evaluate_gate_g1(dsr_result, scorecard, threshold_dsr=0.5)
+    dd_result = P.compute_max_drawdown(result.monthly_returns)
 
     print(f"  Rebalances:        {n_rebalances}")
     print(f"  Cum L/S net:       {total_return:+.2%}")
@@ -89,6 +90,9 @@ def run_for_signal(
     print(f"  DSR (PSR):         {dsr_result['psr']:.3f}")
     print(f"  Mean IC:           {ic_series.mean():+.4f}")
     print(f"  Turnover:          {mean_turnover:.1%}")
+    print(f"  Max drawdown:      {dd_result['max_drawdown']:+.2%}  "
+          f"({dd_result.get('duration_months')}m peak-to-trough, "
+          f"recovery: {dd_result.get('recovery_months')}m)")
     insufficient = set(gate.get("regimes_insufficient_sample", []))
     print(f"  Regime Scorecard (n<{gate.get('regime_min_n', 10)} excluded per Contract v1.1):")
     for regime, row in scorecard.iterrows():
@@ -133,6 +137,9 @@ def run_for_signal(
         n_monthly_observations=dsr_result["T"],
         avg_turnover=mean_turnover,
         scorecard=scorecard_dict,
+        max_drawdown=dd_result["max_drawdown"],
+        max_dd_duration_months=dd_result.get("duration_months"),
+        max_dd_recovery_months=dd_result.get("recovery_months"),
     )
     print(f"  Logged as run_id={run_id}")
 
@@ -143,6 +150,9 @@ def run_for_signal(
         "dsr": gate["observed_dsr_psr"],
         "sharpe": dsr_result["sharpe_annualized"],
         "cum_return": total_return,
+        "max_drawdown": dd_result["max_drawdown"],
+        "dsr_result": dsr_result,
+        "dd_result": dd_result,
         "scorecard": scorecard_dict,
         "gate": gate,
     }
@@ -229,14 +239,30 @@ def main(fast: bool = False, agent: str = "all") -> int:
     print("\n" + "=" * 70)
     print("Summary")
     print("=" * 70)
-    header = f"{'Agent':<12} {'Verdict':<8} {'DSR':>6} {'Sharpe':>8} {'CumRet':>9}"
+    header = (
+        f"{'Agent':<15} {'G1':<6} {'DSR':>6} {'Sharpe':>8} {'CumRet':>9} {'MaxDD':>8}"
+    )
     print(header)
     print("-" * len(header))
     for r in results:
         print(
-            f"{r['agent']:<12} {r['verdict']:<8} {r['dsr']:>6.3f} "
-            f"{r['sharpe']:>+8.3f} {r['cum_return']:>+9.2%}"
+            f"{r['agent']:<15} {r['verdict']:<6} {r['dsr']:>6.3f} "
+            f"{r['sharpe']:>+8.3f} {r['cum_return']:>+9.2%} "
+            f"{r['max_drawdown']:>+8.2%}"
         )
+
+    # ---- Gate G2 evaluation on ensemble ----
+    ensemble_result = next((r for r in results if r["agent"] == "ensemble"), None)
+    if ensemble_result:
+        g2 = P.evaluate_gate_g2(ensemble_result["dsr_result"], ensemble_result["dd_result"])
+        print("\n" + "=" * 70)
+        print(f"GATE G2 (ensemble → held-out eligibility): {g2['verdict']}")
+        print("=" * 70)
+        print(f"  DSR ≥ 1.0:        {'✓' if g2['dsr_pass'] else '✗'}  "
+              f"(observed {g2['observed_dsr']:.3f})")
+        print(f"  Max DD ≤ 25%:     {'✓' if g2['dd_pass'] else '✗'}  "
+              f"(observed {g2['observed_max_dd']:.2%})")
+        print("=" * 70)
 
     save_json(final["scorecard"], out_dir / "regime_scorecard.json")
     save_json(final["gate"], out_dir / "gate_g1_result.json")

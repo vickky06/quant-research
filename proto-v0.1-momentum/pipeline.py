@@ -631,6 +631,76 @@ def compute_dsr(returns: pd.Series, benchmark_sr: float = 0.0) -> dict:
 MIN_REGIME_REBALANCES = 10  # Contract v1.1 / ADR-0003
 
 
+def compute_max_drawdown(monthly_returns: pd.Series) -> dict:
+    """Max drawdown of the equity curve implied by monthly_returns.
+
+    Returns a dict with:
+      max_drawdown       peak-to-trough proportional loss (negative number)
+      peak_date          date of the pre-drawdown high
+      trough_date        date of the drawdown low
+      recovery_date      date when equity first recovered to prior peak (or None if never)
+      duration_months    peak to trough
+      recovery_months    trough to recovery (None if never)
+    """
+    r = monthly_returns.dropna()
+    if len(r) == 0:
+        return {"max_drawdown": 0.0, "peak_date": None, "trough_date": None,
+                "recovery_date": None, "duration_months": None, "recovery_months": None}
+    equity = (1 + r).cumprod()
+    running_max = equity.cummax()
+    dd = equity / running_max - 1.0
+    trough_date = dd.idxmin()
+    max_dd = float(dd.loc[trough_date])
+    # Peak is the last date before trough with equity == running_max
+    peak_slice = equity.loc[:trough_date]
+    peak_date = peak_slice[peak_slice == running_max.loc[trough_date]].index[0]
+    # Recovery: first date after trough where equity >= running_max at peak
+    post = equity.loc[trough_date:]
+    recovery_mask = post >= running_max.loc[trough_date]
+    recovery_date = post[recovery_mask].index[0] if recovery_mask.any() else None
+    duration_months = int(
+        (trough_date.year - peak_date.year) * 12 + (trough_date.month - peak_date.month)
+    )
+    recovery_months = None
+    if recovery_date is not None:
+        recovery_months = int(
+            (recovery_date.year - trough_date.year) * 12
+            + (recovery_date.month - trough_date.month)
+        )
+    return {
+        "max_drawdown": max_dd,
+        "peak_date": peak_date,
+        "trough_date": trough_date,
+        "recovery_date": recovery_date,
+        "duration_months": duration_months,
+        "recovery_months": recovery_months,
+    }
+
+
+def evaluate_gate_g2(
+    dsr_result: dict, dd_result: dict,
+    threshold_dsr: float = 1.0, threshold_max_dd: float = 0.25,
+) -> dict:
+    """Gate G2: ensemble validation on training set.
+
+    Contract §5: DSR >= 1.0 net of costs AND max DD <= 25%.
+    """
+    dsr = dsr_result.get("psr", 0.0)
+    dsr_pass = dsr >= threshold_dsr
+    max_dd = abs(dd_result.get("max_drawdown", 0.0))
+    dd_pass = max_dd <= threshold_max_dd
+    verdict = "PASS" if (dsr_pass and dd_pass) else "FAIL"
+    return {
+        "verdict": verdict,
+        "threshold_dsr": threshold_dsr,
+        "threshold_max_dd": threshold_max_dd,
+        "observed_dsr": dsr,
+        "observed_max_dd": max_dd,
+        "dsr_pass": bool(dsr_pass),
+        "dd_pass": bool(dd_pass),
+    }
+
+
 def evaluate_gate_g1(
     dsr_result: dict, scorecard: pd.DataFrame, threshold_dsr: float = 0.5,
     min_regime_n: int = MIN_REGIME_REBALANCES,
