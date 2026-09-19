@@ -361,7 +361,7 @@ The price chart at the bottom lets you inspect any symbol's history.
             if not sym_df.empty:
                 fig = px.line(sym_df, x="date", y="adj_close",
                               title=f"{sel_sym} — Adjusted Close",
-                              labels={"adj_close": "Price (₹)", "date": ""})
+                              labels={"adj_close": f"Price ({cfg['currency']})", "date": ""})
                 fig.update_layout(height=350, margin=dict(l=0, r=0, t=40, b=0))
                 st.plotly_chart(fig, use_container_width=True)
     else:
@@ -557,7 +557,7 @@ with tab_trades:
                                        help="Used only when 'Type custom' is selected above.")
             direction = c2.selectbox("Direction", ["long", "short"])
             qty = c3.number_input("Quantity", min_value=1, value=100, step=1)
-            price = c4.number_input("Entry price (₹)", min_value=0.01, value=100.0, step=0.05)
+            price = c4.number_input(f"Entry price ({cfg['currency']})", min_value=0.01, value=100.0, step=0.05)
             notes = st.text_input("Notes (optional)")
             submitted = st.form_submit_button("Enter Trade", type="primary")
 
@@ -589,7 +589,7 @@ with tab_trades:
                         [trades_df, pd.DataFrame([new_row])], ignore_index=True
                     )
                     _save_trades(trades_df)
-                    price_str = f"₹{live:.2f} live" if live else f"₹{price:.2f} manual"
+                    price_str = f"{cfg['currency']}{live:.2f} live" if live else f"{cfg['currency']}{price:.2f} manual"
                     st.success(f"Entered {direction.upper()} {qty}× {sym} @ {price_str}")
                     st.rerun()
 
@@ -615,22 +615,22 @@ with tab_trades:
                 pnl = pnl_pct = None
             rows.append({
                 "ID": t["id"], "Symbol": t["symbol"], "Dir": t["direction"],
-                "Qty": qty_v, "Entry ₹": entry,
-                "Live ₹": round(live, 2) if live else "—",
-                "P&L ₹": round(pnl, 0) if pnl is not None else "—",
+                "Qty": qty_v, f"Entry {cfg['currency']}": entry,
+                f"Live {cfg['currency']}": round(live, 2) if live else "—",
+                f"P&L {cfg['currency']}": round(pnl, 0) if pnl is not None else "—",
                 "P&L %": round(pnl_pct, 2) if pnl_pct is not None else "—",
                 "Since": t["entry_date"][:10],
             })
 
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        st.metric("Unrealised P&L", f"₹{total_unreal:+,.0f}")
+        st.metric("Unrealised P&L", f"{cfg['currency']}{total_unreal:+,.0f}")
 
         # ── Close position ────────────────────────────────────────────────────
         with st.expander("✅ Close a position"):
             with st.form("close_trade"):
                 open_syms = open_df["symbol"].tolist()
                 close_sym = st.selectbox("Symbol to close", open_syms)
-                exit_price = st.number_input("Exit price (₹)", min_value=0.01, value=100.0, step=0.05)
+                exit_price = st.number_input(f"Exit price ({cfg['currency']})", min_value=0.01, value=100.0, step=0.05)
                 close_notes = st.text_input("Notes (optional)")
                 close_sub = st.form_submit_button("Close Position", type="primary")
 
@@ -656,7 +656,7 @@ with tab_trades:
                             trades_df.at[i, "notes"] = close_notes
                         _save_trades(trades_df)
                         emoji = "✓" if pnl >= 0 else "✗"
-                        st.success(f"{emoji} Closed {dirn.upper()} {qty_v}× {close_sym} — P&L ₹{pnl:+,.0f} ({pnl_pct:+.2f}%)")
+                        st.success(f"{emoji} Closed {dirn.upper()} {qty_v}× {close_sym} — P&L {cfg['currency']}{pnl:+,.0f} ({pnl_pct:+.2f}%)")
                         st.rerun()
 
 
@@ -700,18 +700,18 @@ Watch for: consistent win rate ≥ 50%, R:R > 1.5x, no single trade losing more 
         avg_loss = closed_df[closed_df["pnl"] < 0]["pnl"].mean() if (closed_df["pnl"] < 0).any() else 0
 
         m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Total P&L", f"₹{total_pnl:+,.0f}")
+        m1.metric("Total P&L", f"{cfg['currency']}{total_pnl:+,.0f}")
         m2.metric("Trades", len(closed_df))
         m3.metric("Win rate", f"{win_rate:.1%}")
-        m4.metric("Avg win", f"₹{avg_win:+,.0f}")
-        m5.metric("Avg loss", f"₹{avg_loss:+,.0f}")
+        m4.metric("Avg win", f"{cfg['currency']}{avg_win:+,.0f}")
+        m5.metric("Avg loss", f"{cfg['currency']}{avg_loss:+,.0f}")
 
         # Equity curve
         closed_df["cumulative_pnl"] = closed_df["pnl"].cumsum()
         fig_eq = px.area(
             closed_df, x="exit_date", y="cumulative_pnl",
-            title="Cumulative P&L (₹)",
-            labels={"cumulative_pnl": "Cumulative P&L (₹)", "exit_date": ""},
+            title=f"Cumulative P&L ({cfg['currency']})",
+            labels={"cumulative_pnl": f"Cumulative P&L ({cfg['currency']})", "exit_date": ""},
             color_discrete_sequence=["#2ecc71"] if total_pnl >= 0 else ["#e74c3c"],
         )
         fig_eq.update_layout(height=300, margin=dict(l=0, r=0, t=40, b=0))
@@ -723,7 +723,7 @@ Watch for: consistent win rate ≥ 50%, R:R > 1.5x, no single trade losing more 
             x=closed_df["symbol"] + " (" + closed_df["direction"] + ")",
             y=closed_df["pnl"],
             marker_color=colors,
-            text=[f"₹{p:+,.0f}" for p in closed_df["pnl"]],
+            text=[f"{cfg['currency']}{p:+,.0f}" for p in closed_df["pnl"]],
             textposition="outside",
         ))
         fig_bar.update_layout(title="P&L per trade", height=300,
@@ -738,8 +738,8 @@ Watch for: consistent win rate ≥ 50%, R:R > 1.5x, no single trade losing more 
         st.dataframe(
             closed_df[display_cols].rename(columns={
                 "symbol": "Symbol", "direction": "Dir", "qty": "Qty",
-                "entry_price": "Entry ₹", "exit_price": "Exit ₹",
-                "pnl": "P&L ₹", "pnl_pct": "P&L %",
+                "entry_price": f"Entry {cfg['currency']}", "exit_price": f"Exit {cfg['currency']}",
+                "pnl": f"P&L {cfg['currency']}", "pnl_pct": "P&L %",
                 "exit_date": "Date", "notes": "Notes",
             }),
             use_container_width=True, hide_index=True,
@@ -912,11 +912,11 @@ It seeds scenarios directly from the algo's current signal rankings.
                                  hide_index=True, height=135)
 
                     # Editable params
-                    entry  = st.number_input("Entry ₹",  value=float(pg["entry_price"]),
+                    entry  = st.number_input(f"Entry {cfg['currency']}",  value=float(pg["entry_price"]),
                                              step=1.0, format="%.2f", key=f"pg_{sc_idx}_entry")
-                    target = st.number_input("Target ₹", value=float(pg["target_price"]),
+                    target = st.number_input(f"Target {cfg['currency']}", value=float(pg["target_price"]),
                                              step=1.0, format="%.2f", key=f"pg_{sc_idx}_target")
-                    stop   = st.number_input("Stop ₹",   value=float(pg["stop_price"]),
+                    stop   = st.number_input(f"Stop {cfg['currency']}",   value=float(pg["stop_price"]),
                                              step=1.0, format="%.2f", key=f"pg_{sc_idx}_stop")
                     qty    = st.number_input("Qty",       value=int(pg["qty"]),
                                              min_value=1, step=10, key=f"pg_{sc_idx}_qty")
@@ -933,11 +933,11 @@ It seeds scenarios directly from the algo's current signal rankings.
                     rr = abs(pnl_tgt / pnl_stop) if pnl_stop != 0 else 0.0
 
                     mc1, mc2 = st.columns(2)
-                    mc1.metric("↑ At target",  f"₹{pnl_tgt:+,.0f}",  f"{ret_tgt:+.1f}%")
-                    mc2.metric("↓ At stop",    f"₹{pnl_stop:+,.0f}", f"{ret_stop:+.1f}%")
+                    mc1.metric("↑ At target",  f"{cfg['currency']}{pnl_tgt:+,.0f}",  f"{ret_tgt:+.1f}%")
+                    mc2.metric("↓ At stop",    f"{cfg['currency']}{pnl_stop:+,.0f}", f"{ret_stop:+.1f}%")
                     st.caption(
                         f"R:R = **{rr:.1f}x** &nbsp;|&nbsp; "
-                        f"Notional ₹{entry * qty:,.0f} &nbsp;|&nbsp; "
+                        f"Notional {cfg['currency']}{entry * qty:,.0f} &nbsp;|&nbsp; "
                         f"Hold {hold}d",
                         unsafe_allow_html=True,
                     )
@@ -963,11 +963,11 @@ It seeds scenarios directly from the algo's current signal rankings.
                         "Symbol": pg["sym"],
                         "Dir": pg["direction"].upper(),
                         "Score": f"{pg['composite_score']:.4f}",
-                        "Entry ₹": f"{entry:,.2f}",
-                        "Target ₹": f"{target:,.2f}",
-                        "Stop ₹": f"{stop:,.2f}",
+                        f"Entry {cfg['currency']}": f"{entry:,.2f}",
+                        f"Target {cfg['currency']}": f"{target:,.2f}",
+                        f"Stop {cfg['currency']}": f"{stop:,.2f}",
                         "Qty": qty,
-                        "P&L @ tgt": f"₹{pnl_tgt:+,.0f}",
+                        "P&L @ tgt": f"{cfg['currency']}{pnl_tgt:+,.0f}",
                         "Return": f"{ret_tgt:+.1f}%",
                         "R:R": f"{rr:.1f}x",
                     })
