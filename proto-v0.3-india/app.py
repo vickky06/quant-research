@@ -25,10 +25,34 @@ import streamlit as st
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent
-DB_PATH = ROOT / "data" / "prices.duckdb"
+DB_PATH = ROOT / "data" / "prices.duckdb"          # India default (kept for compat)
 TRADES_FILE = ROOT / "output" / "paper_trades.csv"
 OUTPUT_DIR = ROOT / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── market configs ────────────────────────────────────────────────────────────
+MARKET_CFG: dict[str, dict] = {
+    "india": {
+        "label": "🇮🇳 India (Nifty 500)",
+        "db_path": ROOT / "data" / "prices.duckdb",
+        "index_ticker": "^NSEI",
+        "currency": "₹",
+        "validated": True,
+        "disclaimer": None,
+    },
+    "us": {
+        "label": "🇺🇸 USA (S&P 500)",
+        "db_path": ROOT / "data" / "prices_us.duckdb",
+        "index_ticker": "^GSPC",
+        "currency": "$",
+        "validated": False,
+        "disclaimer": (
+            "⚠️ **US signals are unvalidated** — exploratory use only. "
+            "No backtesting has been run on US data. Equal-weight signals "
+            "(no regime-conditional weights). Do not use for real trading decisions."
+        ),
+    },
+}
 
 # ── page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -52,19 +76,21 @@ from data_refresh import run_refresh
 # ══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_prices_cached() -> tuple[pd.DataFrame, pd.Series]:
-    if not DB_PATH.exists():
+def _load_prices_cached(market: str = "india") -> tuple[pd.DataFrame, pd.Series]:
+    cfg = MARKET_CFG[market]
+    db = cfg["db_path"]
+    if not db.exists():
         return pd.DataFrame(), pd.Series(dtype=float)
-    prices = load_prices(DB_PATH)
-    index = load_index(DB_PATH)
+    prices = load_prices(db)
+    index = load_index(db, index_ticker=cfg["index_ticker"])
     return prices, index
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_signals_cached() -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.Timestamp | None]:
-    prices, index = _load_prices_cached()
+def _load_signals_cached(market: str = "india") -> tuple:
+    prices, index = _load_prices_cached(market)
     if prices.empty:
-        return {}, pd.DataFrame(), pd.DataFrame(), None
+        return {}, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None
 
     cutoff = prices["date"].max() - pd.Timedelta(days=400)
     prices = prices[prices["date"] >= cutoff]
@@ -74,7 +100,7 @@ def _load_signals_cached() -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.Timesta
     volume = prices.pivot(index="date", columns="symbol", values="volume")
     liq = (close * volume).rolling(60, min_periods=20).mean()
 
-    sector_map = get_sector_map()
+    sector_map = get_sector_map(market=market)
     signals = {
         name: fn(close, index_close=index, sector_map=sector_map)
         for name, fn in AGENTS.items()
@@ -84,7 +110,8 @@ def _load_signals_cached() -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.Timesta
     return signals, close, liq, regime_df, latest
 
 
-def _get_regime_and_weights(regime_df: pd.DataFrame, latest: pd.Timestamp):
+def _get_regime_and_weights(regime_df: pd.DataFrame, latest: pd.Timestamp,
+                            market: str = "india"):
     regime = "UNKNOWN"
     if latest in regime_df.index:
         regime = regime_df.loc[latest, "regime"]
@@ -93,11 +120,15 @@ def _get_regime_and_weights(regime_df: pd.DataFrame, latest: pd.Timestamp):
         if not valid.empty:
             regime = valid.iloc[-1]["regime"]
 
-    raw = REGIME_SIGNAL_WEIGHTS.get(regime, {})
-    if not raw:
-        raw = {n: 1 / len(AGENTS) for n in AGENTS}
-    total = sum(raw.values())
-    weights = {k: v / total for k, v in raw.items()}
+    if market == "us":
+        # No validated regime-conditional weights for US — use equal weight
+        weights = {n: 1 / len(AGENTS) for n in AGENTS}
+    else:
+        raw = REGIME_SIGNAL_WEIGHTS.get(regime, {})
+        if not raw:
+            raw = {n: 1 / len(AGENTS) for n in AGENTS}
+        total = sum(raw.values())
+        weights = {k: v / total for k, v in raw.items()}
     return regime, weights
 
 
@@ -173,13 +204,17 @@ def _regime_badge(regime: str) -> str:
 # App layout
 # ══════════════════════════════════════════════════════════════════════════════
 
-st.title("📊 India v0.3 — Signal Dashboard")
-tab_data, tab_signals, tab_trades, tab_perf, tab_pg = st.tabs(
-    ["📁 Data", "📈 Signals", "📝 Trades", "💰 Performance", "🧪 Playground"]
-)
-
-# ── Sidebar glossary ──────────────────────────────────────────────────────────
+# ── Sidebar: market selector + glossary ──────────────────────────────────────
 with st.sidebar:
+    st.markdown("## 🌍 Market")
+    _market_labels = [v["label"] for v in MARKET_CFG.values()]
+    _selected_label = st.radio(
+        "market_radio", _market_labels, index=0, label_visibility="collapsed"
+    )
+    _market = next(k for k, v in MARKET_CFG.items() if v["label"] == _selected_label)
+    st.session_state["market"] = _market
+
+    st.markdown("---")
     st.markdown("## 📖 Glossary")
     st.markdown("""
 **Regime**
@@ -238,7 +273,22 @@ Total ₹ value of a position = entry price × quantity.
 Indian stocks on yfinance use `.NS` suffix: `RELIANCE.NS`, `TCS.NS`.
     """)
     st.markdown("---")
-    st.caption("India v0.3 · Nifty 500 · 3-signal ensemble")
+    st.caption("v0.3 · 3-signal ensemble · India validated · US exploratory")
+
+
+# ── resolve market after sidebar renders ──────────────────────────────────────
+market = st.session_state.get("market", "india")
+cfg = MARKET_CFG[market]
+
+_flag = "📊" if market == "india" else "🗽"
+st.title(f"{_flag} Signal Dashboard — {cfg['label']}")
+
+tab_data, tab_signals, tab_trades, tab_perf, tab_pg = st.tabs(
+    ["📁 Data", "📈 Signals", "📝 Trades", "💰 Performance", "🧪 Playground"]
+)
+
+if cfg["disclaimer"]:
+    st.warning(cfg["disclaimer"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -277,7 +327,8 @@ The price chart at the bottom lets you inspect any symbol's history.
                 prog.progress(min(fraction, 1.0), text=msg)
                 status.caption(msg)
 
-            run_refresh(interval=interval, fast=fast_mode, on_progress=_on_progress)
+            run_refresh(interval=interval, fast=fast_mode, on_progress=_on_progress,
+                        market=market, db_path=cfg["db_path"])
             prog.progress(1.0, text="Done!")
             status.empty()
             _load_prices_cached.clear()
@@ -288,8 +339,8 @@ The price chart at the bottom lets you inspect any symbol's history.
             st.error(f"Refresh failed: {exc}")
 
     # DB stats
-    if DB_PATH.exists():
-        prices, index = _load_prices_cached()
+    if cfg["db_path"].exists():
+        prices, index = _load_prices_cached(market)
         if not prices.empty:
             st.markdown("---")
             m1, m2, m3, m4 = st.columns(4)
@@ -302,9 +353,10 @@ The price chart at the bottom lets you inspect any symbol's history.
             st.markdown("---")
             st.subheader("Price Chart")
             symbols_available = sorted(prices["symbol"].unique().tolist())
+            default_sym = "RELIANCE.NS" if market == "india" else "AAPL"
             sel_sym = st.selectbox("Symbol", symbols_available,
-                                   index=symbols_available.index("RELIANCE.NS")
-                                   if "RELIANCE.NS" in symbols_available else 0)
+                                   index=symbols_available.index(default_sym)
+                                   if default_sym in symbols_available else 0)
             sym_df = prices[prices["symbol"] == sel_sym].sort_values("date")
             if not sym_df.empty:
                 fig = px.line(sym_df, x="date", y="adj_close",
@@ -344,14 +396,14 @@ Each stock gets a percentile score across the universe. Score = 1.0 means it ran
 4. The **Per-signal breakdown** expander shows which of the 3 signals drove each stock's rank.
         """)
 
-    if not DB_PATH.exists():
+    if not cfg["db_path"].exists():
         st.warning("Run data refresh first.")
     else:
         if st.button("🔁 Recompute Signals"):
             _load_signals_cached.clear()
 
         with st.spinner("Loading signals..."):
-            result = _load_signals_cached()
+            result = _load_signals_cached(market)
 
         if len(result) == 5:
             signals, close, liq, regime_df, latest = result
@@ -361,7 +413,7 @@ Each stock gets a percentile score across the universe. Score = 1.0 means it ran
         if not signals or latest is None:
             st.warning("Not enough data. Run data_refresh.py first.")
         else:
-            regime, weights = _get_regime_and_weights(regime_df, latest)
+            regime, weights = _get_regime_and_weights(regime_df, latest, market=market)
 
             # Header row
             hcol1, hcol2 = st.columns([2, 3])
@@ -414,7 +466,7 @@ Each stock gets a percentile score across the universe. Score = 1.0 means it ran
                 eligible = close.loc[latest].dropna().index.tolist()
 
             ranked = _blend_signals(signals, weights, latest, eligible)
-            sector_map = get_sector_map()
+            sector_map = get_sector_map(market=market)
 
             top_cut = 1.0 - 1.0 / 10
             bot_cut = 1.0 / 10
@@ -493,7 +545,7 @@ with tab_trades:
 
     # ── Enter trade ──────────────────────────────────────────────────────────
     with st.expander("➕ Enter new position", expanded=open_df.empty):
-        universe_syms = sorted(get_universe())
+        universe_syms = sorted(get_universe(market=market))
         CUSTOM_OPT = "✏️  Type custom symbol below..."
         sym_options = universe_syms + [CUSTOM_OPT]
 
@@ -734,14 +786,14 @@ It seeds scenarios directly from the algo's current signal rankings.
 
     pg_n = st.selectbox("Scenarios to generate", [3, 6], index=1, key="pg_n_select")
     if st.button("🎲 Generate Playground", type="primary"):
-        result = _load_signals_cached()
+        result = _load_signals_cached(market)
         if len(result) == 5:
             signals_pg, close_pg, liq_pg, regime_df_pg, latest_pg = result
         else:
             signals_pg, close_pg, liq_pg, latest_pg = result[0], result[1], result[2], result[3]
             regime_df_pg = pd.DataFrame()
 
-        regime_pg, weights_pg = _get_regime_and_weights(regime_df_pg, latest_pg)
+        regime_pg, weights_pg = _get_regime_and_weights(regime_df_pg, latest_pg, market=market)
         eligible_pg = P.per_rebalance_universe(close_pg, liq_pg, latest_pg)
         if len(eligible_pg) < 10:
             eligible_pg = close_pg.loc[latest_pg].dropna().index.tolist()
@@ -759,7 +811,7 @@ It seeds scenarios directly from the algo's current signal rankings.
         )
 
         ic_est = _REGIME_IC.get(regime_pg, 0.025)
-        sector_map_pg = get_sector_map()
+        sector_map_pg = get_sector_map(market=market)
         scenarios: list[dict] = []
 
         for sym, direction, composite_score in picks:

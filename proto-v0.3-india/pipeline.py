@@ -134,8 +134,10 @@ NIFTY500_FALLBACK = [
 ]
 
 
-def get_universe(fast: bool = False) -> list[str]:
-    """Return Nifty 500 tickers in Yahoo Finance format (symbol.NS)."""
+def get_universe(fast: bool = False, market: str = "india") -> list[str]:
+    """Return ticker list for the given market."""
+    if market == "us":
+        return SP500_FALLBACK[:50] if fast else SP500_FALLBACK[:]
     if fast:
         return NIFTY500_FALLBACK
 
@@ -325,11 +327,11 @@ def load_prices(db_path: Path) -> pd.DataFrame:
     return df
 
 
-def load_index(db_path: Path) -> pd.Series:
+def load_index(db_path: Path, index_ticker: str = INDEX_TICKER) -> pd.Series:
     con = _init_db(db_path)
     df = con.execute(
         "SELECT date, close FROM index_prices WHERE symbol = ? ORDER BY date",
-        [INDEX_TICKER],
+        [index_ticker],
     ).fetchdf()
     con.close()
     df["date"] = pd.to_datetime(df["date"])
@@ -588,8 +590,112 @@ NIFTY500_SECTOR_MAP: dict[str, str] = {
 }
 
 
-def get_sector_map(fast: bool = False) -> dict[str, str]:
+# ── S&P 500 universe (US) ─────────────────────────────────────────────────────
+US_INDEX_TICKER = "^GSPC"
+
+SP500_FALLBACK: list[str] = [
+    # Information Technology
+    "AAPL", "MSFT", "NVDA", "AVGO", "AMD", "QCOM", "INTC", "ORCL", "CRM", "ADBE",
+    "NOW", "INTU", "AMAT", "LRCX", "KLAC", "PANW", "CRWD", "MU", "TXN", "CSCO",
+    "IBM", "ACN", "DELL", "FTNT", "MRVL",
+    # Communication Services
+    "GOOGL", "META", "NFLX", "DIS", "T", "VZ", "TMUS", "EA", "CHTR", "PARA",
+    # Consumer Discretionary
+    "AMZN", "TSLA", "HD", "LOW", "MCD", "SBUX", "NKE", "CMG", "TGT", "YUM",
+    "BKNG", "ROST", "TJX", "F", "GM", "ABNB",
+    # Consumer Staples
+    "PG", "KO", "PEP", "WMT", "COST", "PM", "MO", "CL", "KMB", "GIS", "HSY", "STZ",
+    # Financials
+    "JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SCHW", "V", "MA",
+    "AXP", "COF", "USB", "PNC", "TFC", "CB", "MET", "PRU", "AFL", "MMC",
+    # Health Care
+    "JNJ", "UNH", "LLY", "ABBV", "MRK", "PFE", "BMY", "AMGN", "GILD", "VRTX",
+    "REGN", "TMO", "DHR", "ABT", "MDT", "SYK", "BSX", "ISRG", "CVS", "CI",
+    # Industrials
+    "HON", "GE", "MMM", "BA", "RTX", "LMT", "NOC", "GD", "CAT", "DE",
+    "EMR", "ETN", "PH", "ITW", "UNP", "CSX", "FDX", "UPS", "PCAR", "ODFL",
+    # Materials
+    "LIN", "APD", "ECL", "SHW", "NEM", "FCX", "NUE", "STLD", "CF", "ALB",
+    # Energy
+    "XOM", "CVX", "COP", "EOG", "SLB", "PSX", "MPC", "VLO", "DVN", "OXY",
+    # Utilities
+    "NEE", "DUK", "SO", "D", "AEP", "EXC",
+    # Real Estate
+    "AMT", "PLD", "EQIX", "SPG", "O",
+]
+
+SP500_SECTOR_MAP: dict[str, str] = {
+    "AAPL": "Information Technology", "MSFT": "Information Technology",
+    "NVDA": "Information Technology", "AVGO": "Information Technology",
+    "AMD": "Information Technology", "QCOM": "Information Technology",
+    "INTC": "Information Technology", "ORCL": "Information Technology",
+    "CRM": "Information Technology", "ADBE": "Information Technology",
+    "NOW": "Information Technology", "INTU": "Information Technology",
+    "AMAT": "Information Technology", "LRCX": "Information Technology",
+    "KLAC": "Information Technology", "PANW": "Information Technology",
+    "CRWD": "Information Technology", "MU": "Information Technology",
+    "TXN": "Information Technology", "CSCO": "Information Technology",
+    "IBM": "Information Technology", "ACN": "Information Technology",
+    "DELL": "Information Technology", "FTNT": "Information Technology",
+    "MRVL": "Information Technology",
+    "GOOGL": "Communication Services", "META": "Communication Services",
+    "NFLX": "Communication Services", "DIS": "Communication Services",
+    "T": "Communication Services", "VZ": "Communication Services",
+    "TMUS": "Communication Services", "EA": "Communication Services",
+    "CHTR": "Communication Services", "PARA": "Communication Services",
+    "AMZN": "Consumer Discretionary", "TSLA": "Consumer Discretionary",
+    "HD": "Consumer Discretionary", "LOW": "Consumer Discretionary",
+    "MCD": "Consumer Discretionary", "SBUX": "Consumer Discretionary",
+    "NKE": "Consumer Discretionary", "CMG": "Consumer Discretionary",
+    "TGT": "Consumer Discretionary", "YUM": "Consumer Discretionary",
+    "BKNG": "Consumer Discretionary", "ROST": "Consumer Discretionary",
+    "TJX": "Consumer Discretionary", "F": "Consumer Discretionary",
+    "GM": "Consumer Discretionary", "ABNB": "Consumer Discretionary",
+    "PG": "Consumer Staples", "KO": "Consumer Staples",
+    "PEP": "Consumer Staples", "WMT": "Consumer Staples",
+    "COST": "Consumer Staples", "PM": "Consumer Staples",
+    "MO": "Consumer Staples", "CL": "Consumer Staples",
+    "KMB": "Consumer Staples", "GIS": "Consumer Staples",
+    "HSY": "Consumer Staples", "STZ": "Consumer Staples",
+    "JPM": "Financials", "BAC": "Financials", "WFC": "Financials",
+    "GS": "Financials", "MS": "Financials", "C": "Financials",
+    "BLK": "Financials", "SCHW": "Financials", "V": "Financials",
+    "MA": "Financials", "AXP": "Financials", "COF": "Financials",
+    "USB": "Financials", "PNC": "Financials", "TFC": "Financials",
+    "CB": "Financials", "MET": "Financials", "PRU": "Financials",
+    "AFL": "Financials", "MMC": "Financials",
+    "JNJ": "Health Care", "UNH": "Health Care", "LLY": "Health Care",
+    "ABBV": "Health Care", "MRK": "Health Care", "PFE": "Health Care",
+    "BMY": "Health Care", "AMGN": "Health Care", "GILD": "Health Care",
+    "VRTX": "Health Care", "REGN": "Health Care", "TMO": "Health Care",
+    "DHR": "Health Care", "ABT": "Health Care", "MDT": "Health Care",
+    "SYK": "Health Care", "BSX": "Health Care", "ISRG": "Health Care",
+    "CVS": "Health Care", "CI": "Health Care",
+    "HON": "Industrials", "GE": "Industrials", "MMM": "Industrials",
+    "BA": "Industrials", "RTX": "Industrials", "LMT": "Industrials",
+    "NOC": "Industrials", "GD": "Industrials", "CAT": "Industrials",
+    "DE": "Industrials", "EMR": "Industrials", "ETN": "Industrials",
+    "PH": "Industrials", "ITW": "Industrials", "UNP": "Industrials",
+    "CSX": "Industrials", "FDX": "Industrials", "UPS": "Industrials",
+    "PCAR": "Industrials", "ODFL": "Industrials",
+    "LIN": "Materials", "APD": "Materials", "ECL": "Materials",
+    "SHW": "Materials", "NEM": "Materials", "FCX": "Materials",
+    "NUE": "Materials", "STLD": "Materials", "CF": "Materials",
+    "ALB": "Materials",
+    "XOM": "Energy", "CVX": "Energy", "COP": "Energy",
+    "EOG": "Energy", "SLB": "Energy", "PSX": "Energy",
+    "MPC": "Energy", "VLO": "Energy", "DVN": "Energy", "OXY": "Energy",
+    "NEE": "Utilities", "DUK": "Utilities", "SO": "Utilities",
+    "D": "Utilities", "AEP": "Utilities", "EXC": "Utilities",
+    "AMT": "Real Estate", "PLD": "Real Estate", "EQIX": "Real Estate",
+    "SPG": "Real Estate", "O": "Real Estate",
+}
+
+
+def get_sector_map(fast: bool = False, market: str = "india") -> dict[str, str]:
     """Return GICS sector assignments for universe tickers."""
+    if market == "us":
+        return SP500_SECTOR_MAP.copy()
     return NIFTY500_SECTOR_MAP.copy()
 
 

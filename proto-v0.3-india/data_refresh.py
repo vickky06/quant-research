@@ -79,12 +79,13 @@ def _ensure_intraday_table(con: duckdb.DuckDBPyConnection, interval: str) -> str
     return table
 
 
-def refresh_index(con: duckdb.DuckDBPyConnection, interval: str) -> None:
+def refresh_index(con: duckdb.DuckDBPyConnection, interval: str,
+                  index_ticker: str = INDEX_TICKER) -> None:
     """Append new index bars since last stored date."""
     latest = None
     try:
         row = con.execute(
-            "SELECT MAX(date) FROM index_prices WHERE symbol = ?", [INDEX_TICKER]
+            "SELECT MAX(date) FROM index_prices WHERE symbol = ?", [index_ticker]
         ).fetchone()
         if row and row[0]:
             latest = pd.Timestamp(row[0])
@@ -103,14 +104,14 @@ def refresh_index(con: duckdb.DuckDBPyConnection, interval: str) -> None:
 
     today = pd.Timestamp.today().normalize()
     if start > today:
-        print(f"[index] {INDEX_TICKER} up to date ({latest.date() if latest else 'none'})")
+        print(f"[index] {index_ticker} up to date ({latest.date() if latest else 'none'})")
         return
 
     if max_days:
         start = max(start, today - pd.Timedelta(days=max_days))
 
-    print(f"[index] fetching {INDEX_TICKER} {start.date()} → {today.date()}")
-    df = yf.download(INDEX_TICKER, start=start.date(), end=(today + pd.Timedelta(days=1)).date(),
+    print(f"[index] fetching {index_ticker} {start.date()} → {today.date()}")
+    df = yf.download(index_ticker, start=start.date(), end=(today + pd.Timedelta(days=1)).date(),
                      interval=interval, auto_adjust=False, progress=False)
     if df.empty:
         print(f"[index] no new data")
@@ -123,7 +124,7 @@ def refresh_index(con: duckdb.DuckDBPyConnection, interval: str) -> None:
             close = close.iloc[0]
         if pd.isna(close):
             continue
-        rows.append((INDEX_TICKER, dt.date(), float(close)))
+        rows.append((index_ticker, dt.date(), float(close)))
     if rows:
         con.executemany("INSERT OR IGNORE INTO index_prices VALUES (?, ?, ?)", rows)
         print(f"[index] {len(rows)} rows inserted")
@@ -259,16 +260,18 @@ def refresh_symbols(
 
 
 def run_refresh(interval: str = "1d", fast: bool = False,
-                db_path: Path = DB_PATH, on_progress=None) -> None:
+                db_path: Path = DB_PATH, on_progress=None,
+                market: str = "india") -> None:
     """Run refresh in-process. on_progress(fraction 0-1, message) is called each batch."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    symbols = get_universe(fast=fast)
+    symbols = get_universe(fast=fast, market=market)
+    index_ticker = P.US_INDEX_TICKER if market == "us" else P.INDEX_TICKER
     if on_progress:
         on_progress(0.02, f"Initialising — {len(symbols)} symbols to check")
-    print(f"[refresh] {len(symbols)} symbols  interval={interval}  {datetime.now():%Y-%m-%d %H:%M:%S}")
+    print(f"[refresh] {len(symbols)} symbols  interval={interval}  market={market}  {datetime.now():%Y-%m-%d %H:%M:%S}")
     con = P._init_db(db_path)
     try:
-        refresh_index(con, interval)
+        refresh_index(con, interval, index_ticker=index_ticker)
         if on_progress:
             on_progress(0.05, "Index updated — downloading price bars…")
         refresh_symbols(con, symbols, interval, on_progress=on_progress)
