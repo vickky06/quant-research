@@ -456,26 +456,38 @@ def main(fast: bool = False, agent: str = "all") -> int:
         print(f"             mean max DD across folds: {wf_summary['mean_max_dd']:.2%}, "
               f"worst: {wf_summary['worst_max_dd']:.2%}")
 
-        # Multi-trial deflation. We've tested ~5 signals: momentum, low_vol,
-        # low_downside_beta, return_smoothness, mean_reversion. Plus 2 ensemble
-        # forms (equal-weight and meta-learner) and 3 contract versions.
-        # Conservative n_trials = 8.
-        mt = P.compute_multi_trial_deflated_sharpe(
-            wf_folds["sharpe_annualized"], T_per_fold=12, n_trials=8,
-        )
-        print("\n  Multi-trial Deflated Sharpe (Bailey-López de Prado):")
-        print(f"    Trials (approx signals tested): {mt['n_trials']}")
-        print(f"    Folds (out-of-sample years):    {mt['n_folds']}")
-        print(f"    Mean SR observed:               {mt['mean_sr']:+.3f}")
-        print(f"    Expected max SR under null:     {mt['sr_expected_null']:+.3f}")
-        print(f"    Multi-trial DSR:                {mt['dsr_multi_trial']:.3f}")
+        # Multi-trial deflation bracket:
+        #   N=3  optimistic (only distinct signal *families* considered)
+        #   N=5  moderate (signals we implemented and backtested)
+        #   N=8  conservative (every config touch, including retirements + amendments)
+        print("\n  Multi-trial Deflated Sharpe (Bailey-López de Prado) — DSR bracket:")
+        print(f"    {'N':>4}  {'SR_null_max':>12}  {'DSR':>8}  {'Interpretation':<40}")
+        interpretations = {
+            3: "distinct signal families only",
+            5: "signals actually implemented",
+            8: "conservative (incl. retirements)",
+        }
+        mt_bracket = {}
+        for n in (3, 5, 8):
+            mt_n = P.compute_multi_trial_deflated_sharpe(
+                wf_folds["sharpe_annualized"], T_per_fold=12, n_trials=n,
+            )
+            mt_bracket[n] = mt_n
+            print(f"    {n:>4}  {mt_n['sr_expected_null']:>+12.3f}  "
+                  f"{mt_n['dsr_multi_trial']:>8.3f}  {interpretations.get(n, ''):<40}")
+        mt = mt_bracket[8]  # keep conservative as canonical
+        print(f"    Observed mean SR (all N): {mt['mean_sr']:+.3f}, "
+              f"folds: {mt['n_folds']}")
 
         # Persist walk-forward artifacts
         proto_root = Path(__file__).parent
         (proto_root / "output" / "walkforward_folds.csv").write_text(wf_folds.to_csv(index=False))
         import json as _json
         with open(proto_root / "output" / "walkforward_summary.json", "w") as f:
-            _json.dump({"summary": wf_summary, "multi_trial": mt}, f, indent=2, default=str)
+            _json.dump({
+                "summary": wf_summary,
+                "multi_trial_bracket": {str(k): v for k, v in mt_bracket.items()},
+            }, f, indent=2, default=str)
 
         print("=" * 70)
 
