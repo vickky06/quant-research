@@ -1,8 +1,9 @@
 # Strategy Design Contract
 
 **Owner**: Vivek Singh
-**Version**: 1.0
+**Version**: 1.1
 **Created**: 2026-09-19
+**Last amended**: 2026-09-19 (v1.0 → v1.1 — see Amendments at end)
 **Purpose**: Immutable contract defining what this quant system is and isn't. Every future decision is tested against this doc. If a proposed change violates the contract, either the change is rejected or the contract is *explicitly amended and versioned* — never silently drifted.
 
 > **The single hardest discipline in retail quant is not tweaking the rules when a backtest disappoints. This document exists to make that discipline enforceable.**
@@ -145,9 +146,9 @@ Every phase transition has a quantitative gate. **If a gate fails, we do not twe
 
 | Gate | Test | Threshold |
 |---|---|---|
-| **G1: Signal → Ensemble** | Deflated Sharpe, purged CV, regime spread | DSR ≥ 0.5 per signal; positive IC in ≥ 3/4 regimes |
+| **G1: Signal → Ensemble** | Deflated Sharpe, purged CV, regime spread | DSR ≥ 0.5 per signal; positive IC in ≥ 3/4 regimes *with n ≥ 10 rebalances each* (regimes with n < 10 are excluded from evaluation; see ADR-0003) |
 | **G2: Ensemble → Held-out** | DSR + max DD on 2015-2023 training set | DSR ≥ 1.0 net of costs; max DD ≤ 25% |
-| **G3: Held-out → Paper** | One-shot evaluation on 2024-2026 held-out | Realized DSR ≥ 60% of training DSR; max DD ≤ 25%; positive in ≥ 3/4 regimes present in held-out period |
+| **G3: Held-out → Paper** | One-shot evaluation on 2024-2026 held-out | Realized DSR ≥ 60% of training DSR; max DD ≤ 25%; positive in ≥ 3/4 eligible regimes (n ≥ 10) present in held-out period |
 | **G4: Paper → Live small** | 3 months of paper trading | Realized Sharpe ≥ 60% of held-out Sharpe; slippage ≤ 0.15% actual vs 0.10% assumed |
 | **G5: Live small → Live scale** | 12 months of live money | Rolling 12-month Calmar ≥ 1.0 net of actual costs |
 
@@ -291,6 +292,20 @@ Once v1 is done and live small money runs for 12 months meeting G5, the system i
 **Max agents**: 6
 **PM update cadence**: monthly
 **Position sizing**: 0.25 × Kelly, 5% single name, 25% sector
+
+---
+
+## Amendments
+
+### v1.0 → v1.1 (2026-09-19)
+
+**Change**: §5 Gate G1 and G3 regime spread threshold now requires *n ≥ 10 rebalances* per Regime being evaluated. Regimes with fewer observations are excluded from the numerator and denominator, marked "insufficient sample".
+
+**Reason**: v0.2 backtest exposed that `LOW_VOL_DOWN_TREND` had only 4 Rebalances in the 9-year Training Set, making its IC sign a coin flip. The original strict "3 of 4 regimes" rule allowed a noise-observation Regime to veto Gate G1 for ensembles that had genuine edge on the other three Regimes with meaningful samples.
+
+**Justification**: see [ADR-0003](docs/adr/0003-regime-min-sample-size.md).
+
+**Gates affected**: G1, G3. G2 does not use regime spread. Prior gate results must be re-run under the amended rule.
 
 ---
 

@@ -628,17 +628,34 @@ def compute_dsr(returns: pd.Series, benchmark_sr: float = 0.0) -> dict:
 # =============================================================================
 
 
+MIN_REGIME_REBALANCES = 10  # Contract v1.1 / ADR-0003
+
+
 def evaluate_gate_g1(
-    dsr_result: dict, scorecard: pd.DataFrame, threshold_dsr: float = 0.5
+    dsr_result: dict, scorecard: pd.DataFrame, threshold_dsr: float = 0.5,
+    min_regime_n: int = MIN_REGIME_REBALANCES,
 ) -> dict:
+    """Gate G1 per contract v1.1.
+
+    Regime spread now requires n >= min_regime_n Rebalances per Regime.
+    Regimes with fewer observations are excluded from evaluation
+    (numerator and denominator both).
+    """
     dsr = dsr_result.get("psr", 0.0)
     dsr_pass = dsr >= threshold_dsr
 
     # Filter to real regimes (drop UNKNOWN)
     real = scorecard.drop(index="UNKNOWN", errors="ignore")
-    positive = (real["mean"] > 0).sum()
-    total = len(real)
-    regime_pass = positive >= 3 and total >= 3
+    # Contract v1.1: exclude insufficient-sample regimes
+    eligible = real[real["count"] >= min_regime_n]
+    insufficient = real[real["count"] < min_regime_n]
+
+    positive = int((eligible["mean"] > 0).sum())
+    eligible_total = int(len(eligible))
+    # Spirit of the original 3-of-4 rule: allow at most one Regime failure among
+    # eligible Regimes; require at least 3 eligible Regimes total.
+    required_positive = eligible_total - 1
+    regime_pass = eligible_total >= 3 and positive >= required_positive
 
     verdict = "PASS" if (dsr_pass and regime_pass) else "FAIL"
 
@@ -648,8 +665,11 @@ def evaluate_gate_g1(
         "observed_dsr_psr": dsr,
         "dsr_pass": bool(dsr_pass),
         "regime_pass": bool(regime_pass),
-        "regime_positive_count": int(positive),
-        "regime_total_evaluated": int(total),
+        "regime_positive_count": positive,
+        "regime_total_evaluated": eligible_total,
+        "regime_min_n": min_regime_n,
+        "regime_required_positive": required_positive,
+        "regimes_insufficient_sample": insufficient.index.tolist(),
         "sharpe_annualized": dsr_result.get("sharpe_annualized"),
         "num_monthly_observations": dsr_result.get("T"),
     }

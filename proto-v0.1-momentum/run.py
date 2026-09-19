@@ -89,12 +89,23 @@ def run_for_signal(
     print(f"  DSR (PSR):         {dsr_result['psr']:.3f}")
     print(f"  Mean IC:           {ic_series.mean():+.4f}")
     print(f"  Turnover:          {mean_turnover:.1%}")
-    print(f"  Regime Scorecard:")
+    insufficient = set(gate.get("regimes_insufficient_sample", []))
+    print(f"  Regime Scorecard (n<{gate.get('regime_min_n', 10)} excluded per Contract v1.1):")
     for regime, row in scorecard.iterrows():
-        marker = "✓" if row["mean"] > 0 else "✗"
-        print(f"    {marker} {regime:22s}  IC={row['mean']:+.4f}  n={int(row['count'])}")
-    print(f"  Gate G1:           {'PASS ✓' if gate['verdict'] == 'PASS' else 'FAIL ✗'}"
-          f" (DSR pass={gate['dsr_pass']}, regime pass={gate['regime_pass']})")
+        n = int(row["count"])
+        excluded = regime in insufficient
+        if excluded:
+            marker = "—"
+            suffix = " (insufficient sample)"
+        else:
+            marker = "✓" if row["mean"] > 0 else "✗"
+            suffix = ""
+        print(f"    {marker} {regime:22s}  IC={row['mean']:+.4f}  n={n}{suffix}")
+    print(
+        f"  Gate G1:           {'PASS ✓' if gate['verdict'] == 'PASS' else 'FAIL ✗'}"
+        f" (DSR pass={gate['dsr_pass']}, regime pass={gate['regime_pass']}: "
+        f"{gate['regime_positive_count']}/{gate['regime_total_evaluated']} eligible)"
+    )
 
     scorecard_dict = scorecard_to_dict(scorecard)
     run_id = log_run(
