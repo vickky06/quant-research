@@ -423,6 +423,34 @@ def compute_low_downside_beta(
     return result.ffill()
 
 
+QUALITY_WINDOW_DAYS = 252  # 12 months trailing
+
+
+def compute_return_smoothness(close_wide: pd.DataFrame, **kwargs) -> pd.DataFrame:
+    """Return smoothness — a quality proxy from prices alone.
+
+    Signal is the rolling 12-month Sharpe ratio of each stock's own daily
+    log returns (annualized). Cross-sectionally ranked so the smoothest
+    compounders (high individual Sharpe) rank highest.
+
+    Rationale: high individual Sharpe requires positive mean *and* low vol
+    — the combination is not simply "low vol" (large-cap tilt) or simply
+    "momentum" (high mean, any vol). It selects for *stable compounders*,
+    which can be either large-cap grinders or small-cap steady growers.
+    Should avoid the size-premium short-leg failure mode of ADR-0004.
+
+    Long-term evidence: Novy-Marx "Quality Investing" style — quality
+    portfolios show defensive characteristics in DOWN_TREND regimes.
+    """
+    log_returns = np.log(close_wide / close_wide.shift(1))
+    rolling_mean = log_returns.rolling(QUALITY_WINDOW_DAYS).mean()
+    rolling_std = log_returns.rolling(QUALITY_WINDOW_DAYS).std()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rolling_sharpe = (rolling_mean / rolling_std) * np.sqrt(252)
+    rolling_sharpe = rolling_sharpe.replace([np.inf, -np.inf], np.nan)
+    return rolling_sharpe.rank(axis=1, pct=True)
+
+
 # Agent registry — each entry is a pure signal-producing function.
 # Retired agents (see docs/adr/) are excluded even if the function still exists.
 # - compute_low_vol: retired per ADR-0002
@@ -430,6 +458,7 @@ def compute_low_downside_beta(
 AGENTS: dict[str, callable] = {
     "momentum": compute_momentum,
     "mean_reversion": compute_mean_reversion,
+    "return_smoothness": compute_return_smoothness,
 }
 
 
