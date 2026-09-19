@@ -411,6 +411,74 @@ def main(fast: bool = False, agent: str = "all") -> int:
               f"(observed {g2['observed_max_dd']:.2%})")
         print("=" * 70)
 
+    # ---- Walk-forward validation on meta_ensemble ----
+    meta_result = next((r for r in results if r["agent"] == "meta_ensemble"), None)
+    if meta_result and hasattr(meta_result.get("dsr_result", {}), "get"):
+        pass  # inspect below
+
+    if meta_result:
+        # Recover monthly_returns from the run_backtest result — we need to
+        # re-run internally to get access. Simpler: pull the equity curve
+        # already in the result_summary. Actually, we need the raw series.
+        # Alternative: run the meta_ensemble backtest once more, purely for
+        # walk-forward slicing. Cheap since data is cached.
+        print("\n" + "=" * 70)
+        print("Walk-forward validation (meta_ensemble sliced by year)")
+        print("=" * 70)
+
+        wf_result = P.run_meta_ensemble_backtest(
+            signals_by_agent=signals,
+            close_wide=close_wide,
+            liquidity_60d=liquidity_60d,
+            regime_df=regime_df,
+            training_start=TRAINING_START,
+            training_end=TRAINING_END,
+            cost_bps=ROUNDTRIP_COST_BPS,
+        )
+        wf_folds = P.compute_walkforward_folds(wf_result.monthly_returns, fold_years=1)
+        wf_summary = P.summarize_walkforward(wf_folds)
+
+        print(f"  {'Year':<6} {'N':>4} {'Sharpe':>8} {'DSR':>7} {'CumRet':>9} {'MaxDD':>8}")
+        print("  " + "-" * 50)
+        for _, row in wf_folds.iterrows():
+            print(
+                f"  {int(row['fold_start']):<6} {int(row['n_months']):>4} "
+                f"{row['sharpe_annualized']:>+8.3f} {row['dsr_psr']:>7.3f} "
+                f"{row['cum_return']:>+9.2%} {row['max_drawdown']:>+8.2%}"
+            )
+        print("  " + "-" * 50)
+        print(f"  Aggregate: mean SR = {wf_summary['mean_sharpe']:+.3f}, "
+              f"median = {wf_summary['median_sharpe']:+.3f}, "
+              f"std = {wf_summary['std_sharpe']:.3f}")
+        print(f"             range [{wf_summary['min_sharpe']:+.3f}, {wf_summary['max_sharpe']:+.3f}]")
+        print(f"             positive folds: {wf_summary['positive_folds']}/{wf_summary['n_folds']} "
+              f"({wf_summary['positive_fold_rate']:.0%})")
+        print(f"             mean max DD across folds: {wf_summary['mean_max_dd']:.2%}, "
+              f"worst: {wf_summary['worst_max_dd']:.2%}")
+
+        # Multi-trial deflation. We've tested ~5 signals: momentum, low_vol,
+        # low_downside_beta, return_smoothness, mean_reversion. Plus 2 ensemble
+        # forms (equal-weight and meta-learner) and 3 contract versions.
+        # Conservative n_trials = 8.
+        mt = P.compute_multi_trial_deflated_sharpe(
+            wf_folds["sharpe_annualized"], T_per_fold=12, n_trials=8,
+        )
+        print("\n  Multi-trial Deflated Sharpe (Bailey-López de Prado):")
+        print(f"    Trials (approx signals tested): {mt['n_trials']}")
+        print(f"    Folds (out-of-sample years):    {mt['n_folds']}")
+        print(f"    Mean SR observed:               {mt['mean_sr']:+.3f}")
+        print(f"    Expected max SR under null:     {mt['sr_expected_null']:+.3f}")
+        print(f"    Multi-trial DSR:                {mt['dsr_multi_trial']:.3f}")
+
+        # Persist walk-forward artifacts
+        proto_root = Path(__file__).parent
+        (proto_root / "output" / "walkforward_folds.csv").write_text(wf_folds.to_csv(index=False))
+        import json as _json
+        with open(proto_root / "output" / "walkforward_summary.json", "w") as f:
+            _json.dump({"summary": wf_summary, "multi_trial": mt}, f, indent=2, default=str)
+
+        print("=" * 70)
+
     save_json(final["scorecard"], out_dir / "regime_scorecard.json")
     save_json(final["gate"], out_dir / "gate_g1_result.json")
 

@@ -1000,6 +1000,120 @@ def run_meta_ensemble_backtest(
     )
 
 
+# =============================================================================
+# Walk-forward validation
+# =============================================================================
+
+
+def compute_walkforward_folds(
+    monthly_returns: pd.Series,
+    fold_years: int = 1,
+    min_months_per_fold: int = 6,
+) -> pd.DataFrame:
+    """Slice a full backtest into per-year (or per-N-year) folds.
+
+    Since our Meta-Learner is online (weights use only past IC), the full
+    backtest IS a walk-forward — each rebalance decision was already
+    out-of-sample. Partitioning the output by year gives us the fold
+    distribution needed to check *stability* across time.
+    """
+    if monthly_returns.empty:
+        return pd.DataFrame()
+    df = monthly_returns.to_frame("ret")
+    df["fold"] = (df.index.year // fold_years) * fold_years  # aligned bucketing
+
+    records = []
+    for fold, group in df.groupby("fold"):
+        r = group["ret"]
+        if len(r) < min_months_per_fold:
+            continue
+        dsr = compute_dsr(r)
+        dd = compute_max_drawdown(r)
+        records.append({
+            "fold_start": int(fold),
+            "n_months": int(len(r)),
+            "cum_return": float((1 + r).prod() - 1),
+            "sharpe_annualized": float(dsr["sharpe_annualized"]),
+            "dsr_psr": float(dsr["psr"]),
+            "max_drawdown": float(dd["max_drawdown"]),
+        })
+    return pd.DataFrame(records)
+
+
+def compute_multi_trial_deflated_sharpe(
+    fold_sharpes: pd.Series,
+    T_per_fold: int,
+    n_trials: int,
+) -> dict:
+    """Bailey-López de Prado deflated Sharpe corrected for N independent trials.
+
+    Applies when we've tested N strategies and want an overfit-honest
+    verdict on the winning one. Uses the *cross-fold* variance of Sharpe
+    as an estimator of Sharpe's dispersion under the null.
+
+    Formula (Bailey-López de Prado 2014, "Deflated Sharpe Ratio"):
+
+        SR_0 = sqrt(V[SR]) * ((1 - γ) Φ^{-1}(1 - 1/N) + γ Φ^{-1}(1 - 1/(N·e)))
+
+    where γ is the Euler-Mascheroni constant. SR_0 is the expected maximum
+    Sharpe under the null hypothesis of no skill, given N trials. The
+    aggregate DSR then asks: does our observed mean SR beat SR_0?
+    """
+    r = fold_sharpes.dropna()
+    if len(r) < 2 or n_trials < 2:
+        return {"dsr_multi_trial": float("nan"), "sr_expected_null": float("nan"),
+                "mean_sr": float(r.mean()) if len(r) else float("nan"),
+                "n_trials": n_trials, "n_folds": len(r)}
+
+    gamma = 0.5772156649
+    v_sr = float(r.var(ddof=1))
+    if not np.isfinite(v_sr) or v_sr <= 0:
+        return {"dsr_multi_trial": float("nan"), "sr_expected_null": 0.0,
+                "mean_sr": float(r.mean()), "n_trials": n_trials, "n_folds": len(r)}
+
+    sr_null = np.sqrt(v_sr) * (
+        (1 - gamma) * stats.norm.ppf(1 - 1.0 / n_trials)
+        + gamma * stats.norm.ppf(1 - 1.0 / (n_trials * np.e))
+    )
+    mean_sr = float(r.mean())
+
+    # PSR-style probability that our observed SR beats the null max
+    skew = float(stats.skew(r, bias=False))
+    excess_kurt = float(stats.kurtosis(r, fisher=True, bias=False))
+    T = T_per_fold
+    denom = np.sqrt(1 - skew * mean_sr + ((excess_kurt + 2) / 4.0) * mean_sr**2)
+    if denom <= 0 or not np.isfinite(denom):
+        z = (mean_sr - sr_null) * np.sqrt(max(T - 1, 1))
+    else:
+        z = (mean_sr - sr_null) * np.sqrt(max(T - 1, 1)) / denom
+    dsr = float(stats.norm.cdf(z))
+    return {
+        "dsr_multi_trial": dsr,
+        "sr_expected_null": float(sr_null),
+        "mean_sr": mean_sr,
+        "n_trials": n_trials,
+        "n_folds": len(r),
+    }
+
+
+def summarize_walkforward(folds: pd.DataFrame) -> dict:
+    if folds.empty:
+        return {}
+    s = folds["sharpe_annualized"]
+    return {
+        "n_folds": int(len(folds)),
+        "mean_sharpe": float(s.mean()),
+        "median_sharpe": float(s.median()),
+        "min_sharpe": float(s.min()),
+        "max_sharpe": float(s.max()),
+        "std_sharpe": float(s.std(ddof=1)) if len(s) > 1 else 0.0,
+        "positive_folds": int((s > 0).sum()),
+        "positive_fold_rate": float((s > 0).mean()),
+        "mean_max_dd": float(folds["max_drawdown"].mean()),
+        "worst_max_dd": float(folds["max_drawdown"].min()),
+    }
+
+
 def evaluate_gate_g2(
     dsr_result: dict, dd_result: dict,
     threshold_dsr: float = 1.0, threshold_max_dd: float = 0.25,
