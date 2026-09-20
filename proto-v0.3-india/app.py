@@ -316,8 +316,8 @@ cfg = MARKET_CFG[market]
 _flag = "📊" if market == "india" else "🗽"
 st.title(f"{_flag} Signal Dashboard — {cfg['label']}")
 
-tab_picks, tab_data, tab_signals, tab_trades, tab_perf, tab_pg = st.tabs(
-    ["🎯 Today's Picks", "📁 Data", "📈 Signals", "📝 Trades", "💰 Performance", "🧪 Playground"]
+tab_picks, tab_data, tab_signals, tab_trades, tab_perf, tab_pg, tab_coach = st.tabs(
+    ["🎯 Today's Picks", "📁 Data", "📈 Signals", "📝 Trades", "💰 Performance", "🧪 Playground", "🎓 Coach"]
 )
 
 if cfg["disclaimer"]:
@@ -346,28 +346,31 @@ with tab_picks:
             _regime_p, _weights_p = _get_regime_and_weights(
                 _regime_df_p, _latest_p, market=market, strategy_key=_sk
             )
-
-            # ── Context banner ────────────────────────────────────────────────
             _hold_lo, _hold_hi = _strat_p["hold_days"]
             _currency = cfg["currency"]
-
             _regime_colour = REGIME_COLORS.get(_regime_p, "#95a5a6")
-            st.markdown(
-                f"<div style='background:#1e1e2e;border-radius:10px;padding:16px 20px;margin-bottom:16px'>"
-                f"<span style='font-size:1.1em;font-weight:600'>Market: {cfg['label']}</span>"
-                f"&nbsp;&nbsp;|&nbsp;&nbsp;"
-                f"<span style='background:{_strat_p['color']};color:#fff;border-radius:4px;"
-                f"padding:2px 8px;font-size:0.85em'>{_strat_p['name']}</span>"
-                f"&nbsp;&nbsp;|&nbsp;&nbsp;"
-                f"<span style='background:{_regime_colour};color:#fff;border-radius:4px;"
-                f"padding:2px 8px;font-size:0.85em'>Market is: {_regime_p.replace('_', ' ')}</span>"
-                f"<br><br>"
-                f"<span style='color:#aaa;font-size:0.9em'>{_strat_p['simple_description']}</span>"
-                f"<br><span style='color:#888;font-size:0.8em'>Typical hold: {_hold_lo}–{_hold_hi} days &nbsp;|&nbsp; "
-                f"As of {_latest_p.date()}</span>"
-                f"</div>",
+
+            # ── Context banner — native Streamlit components ──────────────────
+            _b1, _b2, _b3 = st.columns(3)
+            _b1.markdown(
+                f"**Market**  \n{cfg['label']}"
+            )
+            _b2.markdown(
+                f"**Strategy**  \n"
+                f"<span style='background:{_strat_p['color']};color:#fff;"
+                f"border-radius:4px;padding:2px 8px;font-size:0.82em'>"
+                f"{_strat_p['name']}</span>",
                 unsafe_allow_html=True,
             )
+            _b3.markdown(
+                f"**Market Mood**  \n"
+                f"<span style='background:{_regime_colour};color:#fff;"
+                f"border-radius:4px;padding:2px 8px;font-size:0.82em'>"
+                f"{_regime_p.replace('_', ' ')}</span>",
+                unsafe_allow_html=True,
+            )
+            st.caption(f"{_strat_p['simple_description']}  |  Hold window: **{_hold_lo}–{_hold_hi} days**  |  As of {_latest_p.date()}")
+            st.markdown("---")
 
             if SKIP_REGIMES and _regime_p in SKIP_REGIMES:
                 st.error("⚠️ Current market regime is uncertain — strategy would stay flat. No picks today.")
@@ -383,92 +386,83 @@ with tab_picks:
                 _longs_p  = _ranked_p[_ranked_p >= 0.88].sort_values(ascending=False).head(_n_picks)
                 _shorts_p = _ranked_p[_ranked_p <= 0.12].sort_values(ascending=True).head(_n_picks)
 
-                def _expected_return(score: float, ic: float, hold_hi: int) -> tuple[float, float]:
-                    """IC-implied expected return range (%, annualised to hold period)."""
+                def _expected_return(score: float, ic: float) -> tuple[float, float]:
                     edge = ic * abs(score - 0.5) * 2 * 100
-                    lo = round(edge * 0.6, 1)
-                    hi = round(edge * 1.4, 1)
-                    return lo, hi
+                    return round(edge * 0.6, 1), round(edge * 1.4, 1)
 
                 def _picks_card(sym: str, score: float, direction: str) -> None:
                     sector = _sector_map_p.get(sym, "—")
-                    arrow = "📈" if direction == "long" else "📉"
-                    action = "BUY" if direction == "long" else "SHORT / AVOID"
-                    action_colour = "#27ae60" if direction == "long" else "#e74c3c"
-                    ret_lo, ret_hi = _expected_return(score, _VALIDATED_IC, _hold_hi)
-                    ret_sign = "+" if direction == "long" else "−"
-
-                    # Live price
+                    is_long = direction == "long"
+                    action_label = "BUY" if is_long else "SHORT / AVOID"
+                    action_colour = "#27ae60" if is_long else "#e74c3c"
+                    ret_lo, ret_hi = _expected_return(score, _VALIDATED_IC)
+                    ret_sign = "+" if is_long else "−"
                     try:
                         _px = float(_close_p.loc[_latest_p, sym])
-                        price_str = f"{_currency}{_px:,.2f}"
+                        _px_default = round(_px, 2)
                     except Exception:
-                        price_str = "—"
+                        _px = 100.0
+                        _px_default = 100.0
 
-                    st.markdown(
-                        f"<div style='border:1px solid #333;border-radius:8px;padding:12px 16px;"
-                        f"margin-bottom:8px;background:#16161e'>"
-                        f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-                        f"  <span style='font-size:1.05em;font-weight:700'>{arrow} {sym}</span>"
-                        f"  <span style='background:{action_colour};color:#fff;border-radius:4px;"
-                        f"    padding:2px 8px;font-size:0.8em;font-weight:600'>{action}</span>"
-                        f"</div>"
-                        f"<div style='color:#aaa;font-size:0.85em;margin-top:4px'>"
-                        f"  Sector: {sector} &nbsp;|&nbsp; Price: {price_str}"
-                        f"</div>"
-                        f"<div style='margin-top:6px;font-size:0.9em'>"
-                        f"  Hold <b>{_hold_lo}–{_hold_hi} days</b> &nbsp;|&nbsp; "
-                        f"  Expected <b style='color:{action_colour}'>{ret_sign}{ret_lo}–{ret_hi}%</b>"
-                        f"  <span style='color:#666;font-size:0.8em'> (algo signal, not a guarantee)</span>"
-                        f"</div>"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-                    # Quick-add to paper trade
-                    with st.expander(f"  ↳ Add {sym} to paper trade", expanded=False):
-                        _qty_p  = st.number_input("Qty", min_value=1, value=10,
-                                                  key=f"picks_qty_{sym}_{direction}")
-                        _epx_p  = st.number_input("Entry price", min_value=0.01,
-                                                  value=round(_px if price_str != "—" else 100.0, 2),
-                                                  key=f"picks_epx_{sym}_{direction}")
-                        if st.button(f"Log trade", key=f"picks_log_{sym}_{direction}"):
-                            _tdf = _load_trades()
-                            _new = {
-                                "id": str(_next_id(_tdf)),
-                                "symbol": sym, "direction": direction,
-                                "qty": str(_qty_p), "entry_price": str(_epx_p),
-                                "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                "exit_price": "", "exit_date": "", "pnl": "", "pnl_pct": "",
-                                "status": "open",
-                                "notes": (f"picks | score={score:.4f} "
-                                          f"strategy={_sk} target={ret_hi}%"),
-                            }
-                            _tdf = pd.concat([_tdf, pd.DataFrame([_new])], ignore_index=True)
-                            _save_trades(_tdf)
-                            st.success(f"✓ Logged {direction.upper()} {sym}")
+                    with st.container(border=True):
+                        _ca, _cb = st.columns([3, 1])
+                        with _ca:
+                            st.markdown(
+                                f"**{'📈' if is_long else '📉'} {sym}** &nbsp; "
+                                f"<span style='background:{action_colour};color:#fff;"
+                                f"border-radius:4px;padding:1px 7px;font-size:0.78em'>{action_label}</span>",
+                                unsafe_allow_html=True,
+                            )
+                            st.caption(f"Sector: {sector}  |  Price: {_currency}{_px:,.2f}")
+                        with _cb:
+                            st.metric(
+                                label=f"Expected ({_hold_lo}–{_hold_hi}d)",
+                                value=f"{ret_sign}{ret_hi}%",
+                                delta=f"range {ret_lo}–{ret_hi}%",
+                                delta_color="normal" if is_long else "inverse",
+                            )
+                        with st.expander(f"Log paper trade for {sym}"):
+                            _c1, _c2, _c3 = st.columns(3)
+                            _qty_p = _c1.number_input("Qty", min_value=1, value=10,
+                                                      key=f"picks_qty_{sym}_{direction}")
+                            _epx_p = _c2.number_input("Entry price", min_value=0.01,
+                                                      value=_px_default,
+                                                      key=f"picks_epx_{sym}_{direction}")
+                            with _c3:
+                                st.write("")
+                                st.write("")
+                                if st.button("Log", key=f"picks_log_{sym}_{direction}"):
+                                    _tdf = _load_trades()
+                                    _new = {
+                                        "id": str(_next_id(_tdf)),
+                                        "symbol": sym, "direction": direction,
+                                        "qty": str(_qty_p), "entry_price": str(_epx_p),
+                                        "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                        "exit_price": "", "exit_date": "", "pnl": "", "pnl_pct": "",
+                                        "status": "open",
+                                        "notes": (f"picks | score={score:.4f} "
+                                                  f"strategy={_sk} target={ret_hi}%"),
+                                    }
+                                    _tdf = pd.concat([_tdf, pd.DataFrame([_new])], ignore_index=True)
+                                    _save_trades(_tdf)
+                                    st.success(f"✓ Logged {direction.upper()} {sym}")
 
                 lcol_p, rcol_p = st.columns(2)
                 with lcol_p:
-                    st.markdown("### 🟢 Buy")
+                    st.subheader("🟢 Buy")
                     if _longs_p.empty:
                         st.info("No strong buy signals right now.")
                     for _sym, _sc in _longs_p.items():
                         _picks_card(_sym, _sc, "long")
 
                 with rcol_p:
-                    st.markdown("### 🔴 Sell / Avoid")
+                    st.subheader("🔴 Sell / Avoid")
                     if _shorts_p.empty:
                         st.info("No strong sell signals right now.")
                     for _sym, _sc in _shorts_p.items():
                         _picks_card(_sym, _sc, "short")
 
-                st.markdown(
-                    "<br><div style='color:#666;font-size:0.78em;text-align:center'>"
-                    "Algo signals based on statistical models. Not financial advice. "
-                    "Always verify with fundamentals and news before acting."
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
+                st.caption("Algo signals based on statistical models. Not financial advice. Always verify with fundamentals before acting.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1174,3 +1168,180 @@ It seeds scenarios directly from the algo's current signal rankings.
             for _k in [k for k in st.session_state if k.startswith("pg_")]:
                 del st.session_state[_k]
             st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — Coach
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab_coach:
+    try:
+        import coach as _coach
+        _coach_available = True
+    except ImportError:
+        _coach_available = False
+
+    if not _coach_available:
+        st.error("coach.py not found in the same directory as app.py.")
+        st.stop()
+
+    # ── Check API key ─────────────────────────────────────────────────────────
+    import os as _os
+    if not _os.environ.get("ANTHROPIC_API_KEY"):
+        st.warning(
+            "**ANTHROPIC_API_KEY not set.**  \n"
+            "Run the app with the key exported, e.g.:  \n"
+            "`ANTHROPIC_API_KEY=sk-ant-... streamlit run app.py`  \n"
+            "Or add it to a `.env` file in this folder."
+        )
+        st.stop()
+
+    # ── Build live context for the coach ─────────────────────────────────────
+    _ck_market  = st.session_state.get("market", "india")
+    _ck_cfg     = MARKET_CFG[_ck_market]
+    _ck_sk      = st.session_state.get("strategy", DEFAULT_STRATEGY)
+    _ck_strat   = STRATEGIES.get(_ck_sk, STRATEGIES[DEFAULT_STRATEGY])
+
+    _ck_longs, _ck_shorts, _ck_regime = [], [], "UNKNOWN"
+    try:
+        _ck_result = _load_signals_cached(_ck_market)
+        if len(_ck_result) == 5 and _ck_result[0]:
+            _ck_sigs, _ck_close, _ck_liq, _ck_rdf, _ck_latest = _ck_result
+            _ck_regime, _ck_w = _get_regime_and_weights(_ck_rdf, _ck_latest,
+                                                         market=_ck_market, strategy_key=_ck_sk)
+            _ck_elig = P.per_rebalance_universe(_ck_close, _ck_liq, _ck_latest)
+            if len(_ck_elig) < 10:
+                _ck_elig = _ck_close.loc[_ck_latest].dropna().index.tolist()
+            _ck_ranked = _blend_signals(_ck_sigs, _ck_w, _ck_latest, _ck_elig)
+            _ck_longs  = list(_ck_ranked[_ck_ranked >= 0.88]
+                              .sort_values(ascending=False).head(5).items())
+            _ck_shorts = list(_ck_ranked[_ck_ranked <= 0.12]
+                              .sort_values(ascending=True).head(5).items())
+    except Exception:
+        pass
+
+    # Paper trade summary for context
+    _ck_tdf = _load_trades()
+    if _ck_tdf.empty:
+        _ck_trade_summary = "No paper trades logged yet."
+    else:
+        _open   = _ck_tdf[_ck_tdf["status"] == "open"]
+        _closed = _ck_tdf[_ck_tdf["status"] == "closed"]
+        _wins   = sum(1 for _, r in _closed.iterrows() if r["pnl"] and float(r["pnl"]) > 0)
+        _total  = len(_closed)
+        _win_rate = f"{_wins}/{_total}" if _total else "0/0"
+        _recent = _closed.tail(3)[["symbol", "direction", "pnl", "pnl_pct"]].to_string(index=False) if not _closed.empty else "none"
+        _ck_trade_summary = (
+            f"Open positions: {len(_open)}\n"
+            f"Closed trades: {_total}  Win rate: {_win_rate}\n"
+            f"Last 3 closed trades:\n{_recent}"
+        )
+
+    _ck_context = _coach.build_context(
+        regime=_ck_regime,
+        strategy_name=_ck_strat["name"],
+        longs=_ck_longs,
+        shorts=_ck_shorts,
+        trade_summary=_ck_trade_summary,
+        currency=_ck_cfg["currency"],
+        date=str(pd.Timestamp.today().date()),
+        market=_ck_market,
+    )
+
+    # ── Session state init ────────────────────────────────────────────────────
+    if "coach_messages" not in st.session_state:
+        st.session_state["coach_messages"] = []
+    if "coach_mode" not in st.session_state:
+        st.session_state["coach_mode"] = None
+
+    # ── Mode selector ─────────────────────────────────────────────────────────
+    st.markdown("### 🎓 Trading Coach")
+    st.caption("Pick a mode to start. The coach knows your live signals, regime, and paper trade history.")
+
+    _m1, _m2, _m3, _m_reset = st.columns([2, 2, 2, 1])
+
+    def _set_coach_mode(mode: str, kick_off: str) -> None:
+        st.session_state["coach_messages"] = []
+        st.session_state["coach_mode"] = mode
+        # Send the kick-off as the first assistant message
+        with st.spinner("Coach is thinking…"):
+            try:
+                reply = _coach.chat(
+                    [{"role": "user", "content": kick_off}],
+                    _ck_context,
+                )
+                st.session_state["coach_messages"] = [
+                    {"role": "user",      "content": kick_off},
+                    {"role": "assistant", "content": reply},
+                ]
+            except Exception as e:
+                st.session_state["coach_messages"] = [
+                    {"role": "assistant", "content": f"Error reaching coach: {e}"},
+                ]
+
+    with _m1:
+        if st.button("📚 Teach me", use_container_width=True,
+                     help="Coach walks you through the curriculum step by step"):
+            _set_coach_mode(
+                "learn",
+                "I want to learn. Start from wherever makes sense given what you know about me — "
+                "but don't assume I know finance. Ask me one question first to figure out what I already understand.",
+            )
+            st.rerun()
+
+    with _m2:
+        if st.button("🧪 Quiz me", use_container_width=True,
+                     help="Coach picks a topic and tests your knowledge"):
+            _set_coach_mode(
+                "quiz",
+                "Quiz me. Pick a concept from the curriculum that you think I should know by now, "
+                "and fire a question at me. One question, no hints.",
+            )
+            st.rerun()
+
+    with _m3:
+        if st.button("📋 Review my trades", use_container_width=True,
+                     help="Coach analyses your paper trade history and grills you on decisions"):
+            _set_coach_mode(
+                "review",
+                "Review my paper trades. Be honest — if a decision was bad, tell me. "
+                "Start by summarising what you see in my trade history, then pick the most "
+                "interesting trade and ask me why I made that decision.",
+            )
+            st.rerun()
+
+    with _m_reset:
+        if st.button("🔄 Reset", use_container_width=True, help="Clear chat history"):
+            st.session_state["coach_messages"] = []
+            st.session_state["coach_mode"] = None
+            st.rerun()
+
+    st.markdown("---")
+
+    # ── Render chat history ───────────────────────────────────────────────────
+    _msgs = st.session_state.get("coach_messages", [])
+
+    if not _msgs:
+        st.info("Choose a mode above to start a coaching session.")
+    else:
+        for _msg in _msgs:
+            with st.chat_message(_msg["role"]):
+                st.markdown(_msg["content"])
+
+    # ── Chat input ────────────────────────────────────────────────────────────
+    if _msgs:
+        _user_input = st.chat_input("Your answer…")
+        if _user_input:
+            _msgs.append({"role": "user", "content": _user_input})
+            st.session_state["coach_messages"] = _msgs
+            with st.chat_message("user"):
+                st.markdown(_user_input)
+            with st.chat_message("assistant"):
+                with st.spinner(""):
+                    try:
+                        _reply = _coach.chat(_msgs, _ck_context)
+                    except Exception as e:
+                        _reply = f"Error: {e}"
+                    st.markdown(_reply)
+            _msgs.append({"role": "assistant", "content": _reply})
+            st.session_state["coach_messages"] = _msgs
