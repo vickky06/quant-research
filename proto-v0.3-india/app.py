@@ -212,6 +212,93 @@ def _regime_badge(regime: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Welcome walkthrough dialog
+# ══════════════════════════════════════════════════════════════════════════════
+
+@st.dialog("👋 Welcome to the Signal Dashboard", width="large")
+def _welcome_dialog():
+    st.markdown(
+        "This app turns a quantitative algo into plain-English trade signals for Indian and US markets. "
+        "Here's everything you need to know to go from zero to your first paper trade in under 5 minutes."
+    )
+
+    st.markdown("---")
+
+    steps = [
+        (
+            "1️⃣  Refresh your data",
+            "📁 Data tab",
+            "Click **Refresh Data**. The first run downloads ~15 years of Nifty 500 daily prices (~2–5 min). "
+            "After that, refreshes only fetch the latest bars — takes seconds.",
+        ),
+        (
+            "2️⃣  Pick your market & strategy",
+            "Sidebar",
+            "Toggle between 🇮🇳 **India (Nifty 500)** and 🇺🇸 **USA (S&P 500)** at the top of the sidebar. "
+            "Then choose a strategy. Start with **🏆 Regime-Conditional Ensemble** — it's the only one "
+            "that has been statistically validated (Gate G3 passed).",
+        ),
+        (
+            "3️⃣  See today's picks",
+            "🎯 Today's Picks tab",
+            "The algo tells you which stocks to **Buy** and which to **Sell / Avoid**, along with "
+            "how long to hold them and the expected return range. "
+            "Use the **Log paper trade** expander on any card to record the position.",
+        ),
+        (
+            "4️⃣  Understand why",
+            "📈 Signals tab",
+            "See the full ranked list of all stocks with their composite scores. "
+            "The **Per-signal breakdown** expander shows which of the 3 signals (mean reversion, "
+            "sector-neutral MR, momentum) drove each stock's rank.",
+        ),
+        (
+            "5️⃣  Simulate before committing",
+            "🧪 Playground tab",
+            "Generate 3–6 scenario cards for stocks you're considering. "
+            "Each card shows entry, target, stop, expected P&L, and reward-to-risk ratio. "
+            "Promote a scenario directly to a paper trade when you're happy with the setup.",
+        ),
+        (
+            "6️⃣  Track your trades",
+            "📝 Trades tab",
+            "All logged trades are saved locally to `output/paper_trades.csv`. "
+            "Open positions show live mark-to-market P&L. Closed trades track win rate and realised P&L.",
+        ),
+        (
+            "7️⃣  Learn as you go",
+            "🎓 Coach tab",
+            "The AI coach knows your live signals and your trade history. "
+            "Use **Teach me** to learn the concepts, **Quiz me** to test yourself, "
+            "or **Review my trades** to get honest feedback on your decisions. "
+            "Needs `ANTHROPIC_API_KEY` set in your environment.",
+        ),
+    ]
+
+    for title, badge, body in steps:
+        with st.container(border=True):
+            _sc1, _sc2 = st.columns([5, 2])
+            _sc1.markdown(f"**{title}**")
+            _sc2.markdown(
+                f"<div style='text-align:right'>"
+                f"<span style='background:#3498db;color:#fff;border-radius:4px;"
+                f"padding:1px 8px;font-size:0.78em'>{badge}</span></div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(body)
+
+    st.markdown("---")
+    st.caption(
+        "The validated strategy has an Information Coefficient of ~0.05 — a real but modest edge. "
+        "This is a research tool. Always verify signals with fundamentals and news before acting. "
+        "Not financial advice."
+    )
+    if st.button("Got it — take me to the app →", type="primary", use_container_width=True):
+        st.session_state["welcome_seen"] = True
+        st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # App layout
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -306,6 +393,8 @@ Total ₹ value of a position = entry price × quantity.
 Indian stocks on yfinance use `.NS` suffix: `RELIANCE.NS`, `TCS.NS`.
     """)
     st.markdown("---")
+    if st.button("👋 How to use this app", use_container_width=True):
+        st.session_state["welcome_seen"] = False
     st.caption("v0.3 · 3-signal ensemble · India validated · US exploratory")
 
 
@@ -315,6 +404,10 @@ cfg = MARKET_CFG[market]
 
 _flag = "📊" if market == "india" else "🗽"
 st.title(f"{_flag} Signal Dashboard — {cfg['label']}")
+
+# Auto-open welcome on first visit; sidebar button resets the flag to re-open
+if not st.session_state.get("welcome_seen", False):
+    _welcome_dialog()
 
 tab_picks, tab_data, tab_signals, tab_trades, tab_perf, tab_pg, tab_coach = st.tabs(
     ["🎯 Today's Picks", "📁 Data", "📈 Signals", "📝 Trades", "💰 Performance", "🧪 Playground", "🎓 Coach"]
