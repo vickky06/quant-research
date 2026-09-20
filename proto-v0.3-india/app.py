@@ -64,11 +64,12 @@ st.set_page_config(
 # ── lazy imports (only after path setup) ─────────────────────────────────────
 import pipeline as P
 from pipeline import (
-    AGENTS, ROUNDTRIP_COST_BPS, compute_regime,
+    AGENTS, EXTRA_SIGNALS, ROUNDTRIP_COST_BPS, compute_regime,
     get_sector_map, get_universe, load_index, load_prices,
 )
 from run import REGIME_SIGNAL_WEIGHTS, SKIP_REGIMES
 from data_refresh import run_refresh
+from strategies import STRATEGIES, DEFAULT_STRATEGY
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -102,16 +103,20 @@ def _load_signals_cached(market: str = "india") -> tuple:
 
     sector_map = get_sector_map(market=market)
     signals = {
-        name: fn(close, index_close=index, sector_map=sector_map)
+        name: fn(close, index_close=index, sector_map=sector_map, volume=volume)
         for name, fn in AGENTS.items()
     }
+    # Compute extra signals (volume_mr etc.) — kept separate from AGENTS to
+    # avoid affecting validated backtests in run.py
+    for name, fn in EXTRA_SIGNALS.items():
+        signals[name] = fn(close, volume=volume)
     regime_df = compute_regime(index)
     latest = close.index.max()
     return signals, close, liq, regime_df, latest
 
 
 def _get_regime_and_weights(regime_df: pd.DataFrame, latest: pd.Timestamp,
-                            market: str = "india"):
+                            market: str = "india", strategy_key: str = DEFAULT_STRATEGY):
     regime = "UNKNOWN"
     if latest in regime_df.index:
         regime = regime_df.loc[latest, "regime"]
@@ -120,15 +125,19 @@ def _get_regime_and_weights(regime_df: pd.DataFrame, latest: pd.Timestamp,
         if not valid.empty:
             regime = valid.iloc[-1]["regime"]
 
-    if market == "us":
-        # No validated regime-conditional weights for US — use equal weight
-        weights = {n: 1 / len(AGENTS) for n in AGENTS}
-    else:
-        raw = REGIME_SIGNAL_WEIGHTS.get(regime, {})
+    strategy = STRATEGIES.get(strategy_key, STRATEGIES[DEFAULT_STRATEGY])
+
+    if strategy["use_regime_weights"] and market == "india":
+        raw = dict(REGIME_SIGNAL_WEIGHTS.get(regime, {}))
         if not raw:
             raw = {n: 1 / len(AGENTS) for n in AGENTS}
-        total = sum(raw.values())
-        weights = {k: v / total for k, v in raw.items()}
+        raw["volume_mr"] = 0.0   # validated strategy never uses volume_mr
+    else:
+        raw = dict(strategy["weights"])
+
+    raw = {k: v for k, v in raw.items() if v > 0}
+    total = sum(raw.values())
+    weights = {k: v / total for k, v in raw.items()} if total else raw
     return regime, weights
 
 
@@ -213,6 +222,28 @@ with st.sidebar:
     )
     _market = next(k for k, v in MARKET_CFG.items() if v["label"] == _selected_label)
     st.session_state["market"] = _market
+
+    st.markdown("---")
+    st.markdown("## 🧠 Strategy")
+    _strategy_key = st.selectbox(
+        "strategy_select",
+        options=list(STRATEGIES.keys()),
+        format_func=lambda k: STRATEGIES[k]["name"],
+        index=list(STRATEGIES.keys()).index(DEFAULT_STRATEGY),
+        label_visibility="collapsed",
+    )
+    st.session_state["strategy"] = _strategy_key
+    _strat = STRATEGIES[_strategy_key]
+    _tag_color = {"Validated": "#2ecc71", "Exploratory": "#3498db", "Experimental": "#e67e22"}
+    _tc = _tag_color.get(_strat["tag"], "#95a5a6")
+    st.markdown(
+        f'<span style="background:{_tc};color:#fff;padding:2px 8px;border-radius:8px;font-size:0.8em">'
+        f'{_strat["tag"]}</span>',
+        unsafe_allow_html=True,
+    )
+    st.caption(_strat["description"])
+    if _strategy_key == "regime_ensemble" and _market == "us":
+        st.warning("Regime weights not validated for US — equal weights used instead.")
 
     st.markdown("---")
     st.markdown("## 📖 Glossary")
@@ -413,7 +444,8 @@ Each stock gets a percentile score across the universe. Score = 1.0 means it ran
         if not signals or latest is None:
             st.warning("Not enough data. Run data_refresh.py first.")
         else:
-            regime, weights = _get_regime_and_weights(regime_df, latest, market=market)
+            strategy_key = st.session_state.get("strategy", DEFAULT_STRATEGY)
+            regime, weights = _get_regime_and_weights(regime_df, latest, market=market, strategy_key=strategy_key)
 
             # Header row
             hcol1, hcol2 = st.columns([2, 3])
@@ -421,6 +453,14 @@ Each stock gets a percentile score across the universe. Score = 1.0 means it ran
                 st.markdown("**Current Regime**")
                 st.markdown(_regime_badge(regime), unsafe_allow_html=True)
                 st.caption(f"As of {latest.date()}")
+                strat_info = STRATEGIES.get(strategy_key, STRATEGIES[DEFAULT_STRATEGY])
+                st.markdown(
+                    f"**Strategy:** {strat_info['name']} "
+                    f"<span style='background:{strat_info['color']};color:#fff;"
+                    f"border-radius:4px;padding:1px 6px;font-size:0.75em'>"
+                    f"{strat_info['tag']}</span>",
+                    unsafe_allow_html=True,
+                )
                 gated = SKIP_REGIMES and regime in SKIP_REGIMES
                 if gated:
                     st.error("⚠️ This regime is in the skip list — strategy would be FLAT")
@@ -793,7 +833,8 @@ It seeds scenarios directly from the algo's current signal rankings.
             signals_pg, close_pg, liq_pg, latest_pg = result[0], result[1], result[2], result[3]
             regime_df_pg = pd.DataFrame()
 
-        regime_pg, weights_pg = _get_regime_and_weights(regime_df_pg, latest_pg, market=market)
+        regime_pg, weights_pg = _get_regime_and_weights(regime_df_pg, latest_pg, market=market,
+                                                         strategy_key=st.session_state.get("strategy", DEFAULT_STRATEGY))
         eligible_pg = P.per_rebalance_universe(close_pg, liq_pg, latest_pg)
         if len(eligible_pg) < 10:
             eligible_pg = close_pg.loc[latest_pg].dropna().index.tolist()
@@ -952,6 +993,7 @@ It seeds scenarios directly from the algo's current signal rankings.
                             "exit_price": "", "exit_date": "", "pnl": "", "pnl_pct": "",
                             "status": "open",
                             "notes": (f"playground #{sc_idx+1} | score={pg['composite_score']:.4f} "
+                                      f"| strategy={st.session_state.get('strategy', DEFAULT_STRATEGY)} "
                                       f"| target={target} | stop={stop}"),
                         }
                         trades_df = pd.concat([trades_df, pd.DataFrame([new_row])], ignore_index=True)

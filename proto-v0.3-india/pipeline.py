@@ -731,11 +731,38 @@ def compute_sector_neutral_mean_reversion(
     return (-idio_return).rank(axis=1, pct=True)
 
 
+def compute_volume_mr(
+    close_wide: pd.DataFrame,
+    volume: pd.DataFrame | None = None,
+    **kwargs,
+) -> pd.DataFrame:
+    """Volume-confirmed mean reversion.
+
+    Stocks that declined on elevated relative volume are stronger bounce
+    candidates — high volume suggests institutional selling exhaustion.
+    Score = -(20d return × relative volume ratio), ranked percentile.
+    Falls back to plain mean reversion if volume is unavailable.
+    """
+    ret_20 = close_wide.pct_change(20)
+    if volume is None or volume.empty:
+        return (-ret_20).rank(axis=1, pct=True)
+    vol_20 = volume.rolling(20, min_periods=10).mean()
+    vol_60 = volume.rolling(60, min_periods=20).mean().replace(0, np.nan)
+    rel_vol = (vol_20 / vol_60).clip(0.5, 3.0).fillna(1.0)
+    signal = ret_20 * rel_vol          # fell on high volume → large negative value
+    return (-signal).rank(axis=1, pct=True)
+
+
 # Agent registry — India v0.3: mean_reversion + sector_neutral_mr + momentum.
+# volume_mr is kept separate to avoid altering validated backtests.
 AGENTS: dict[str, callable] = {
     "mean_reversion": compute_mean_reversion,
     "sector_neutral_mr": compute_sector_neutral_mean_reversion,
     "momentum": compute_momentum,
+}
+
+EXTRA_SIGNALS: dict[str, callable] = {
+    "volume_mr": compute_volume_mr,
 }
 
 
