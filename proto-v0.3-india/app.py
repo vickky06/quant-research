@@ -4,10 +4,12 @@ Run with:
     streamlit run app.py
 
 Tabs:
-    Data      — DB status, incremental refresh, price chart
-    Signals   — Current regime, ranked longs/shorts, per-signal breakdown
-    Trades    — Log paper trades, open positions with live P&L
-    Performance — Equity curve, win rate, trade history
+    Today's Picks — Plain-English buy/sell cards with expected return + hold period
+    Data          — DB status, incremental refresh, price chart
+    Signals       — Current regime, ranked longs/shorts, per-signal breakdown
+    Trades        — Log paper trades, open positions with live P&L
+    Performance   — Equity curve, win rate, trade history
+    Playground    — Scenario analysis for individual stocks
 """
 
 from __future__ import annotations
@@ -314,12 +316,159 @@ cfg = MARKET_CFG[market]
 _flag = "📊" if market == "india" else "🗽"
 st.title(f"{_flag} Signal Dashboard — {cfg['label']}")
 
-tab_data, tab_signals, tab_trades, tab_perf, tab_pg = st.tabs(
-    ["📁 Data", "📈 Signals", "📝 Trades", "💰 Performance", "🧪 Playground"]
+tab_picks, tab_data, tab_signals, tab_trades, tab_perf, tab_pg = st.tabs(
+    ["🎯 Today's Picks", "📁 Data", "📈 Signals", "📝 Trades", "💰 Performance", "🧪 Playground"]
 )
 
 if cfg["disclaimer"]:
     st.warning(cfg["disclaimer"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 0 — Today's Picks  (simple consumer view)
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab_picks:
+    _VALIDATED_IC = 0.05   # validated Information Coefficient from India backtests
+
+    if not cfg["db_path"].exists():
+        st.warning("No data yet. Go to the **Data** tab and click **Refresh Data**.")
+    else:
+        with st.spinner("Loading signals…"):
+            _picks_result = _load_signals_cached(market)
+
+        if len(_picks_result) != 5 or not _picks_result[0]:
+            st.warning("Not enough data. Run data refresh first.")
+        else:
+            _signals_p, _close_p, _liq_p, _regime_df_p, _latest_p = _picks_result
+            _sk = st.session_state.get("strategy", DEFAULT_STRATEGY)
+            _strat_p = STRATEGIES.get(_sk, STRATEGIES[DEFAULT_STRATEGY])
+            _regime_p, _weights_p = _get_regime_and_weights(
+                _regime_df_p, _latest_p, market=market, strategy_key=_sk
+            )
+
+            # ── Context banner ────────────────────────────────────────────────
+            _hold_lo, _hold_hi = _strat_p["hold_days"]
+            _currency = cfg["currency"]
+
+            _regime_colour = REGIME_COLORS.get(_regime_p, "#95a5a6")
+            st.markdown(
+                f"<div style='background:#1e1e2e;border-radius:10px;padding:16px 20px;margin-bottom:16px'>"
+                f"<span style='font-size:1.1em;font-weight:600'>Market: {cfg['label']}</span>"
+                f"&nbsp;&nbsp;|&nbsp;&nbsp;"
+                f"<span style='background:{_strat_p['color']};color:#fff;border-radius:4px;"
+                f"padding:2px 8px;font-size:0.85em'>{_strat_p['name']}</span>"
+                f"&nbsp;&nbsp;|&nbsp;&nbsp;"
+                f"<span style='background:{_regime_colour};color:#fff;border-radius:4px;"
+                f"padding:2px 8px;font-size:0.85em'>Market is: {_regime_p.replace('_', ' ')}</span>"
+                f"<br><br>"
+                f"<span style='color:#aaa;font-size:0.9em'>{_strat_p['simple_description']}</span>"
+                f"<br><span style='color:#888;font-size:0.8em'>Typical hold: {_hold_lo}–{_hold_hi} days &nbsp;|&nbsp; "
+                f"As of {_latest_p.date()}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+            if SKIP_REGIMES and _regime_p in SKIP_REGIMES:
+                st.error("⚠️ Current market regime is uncertain — strategy would stay flat. No picks today.")
+            else:
+                # ── Compute ranked scores ─────────────────────────────────────
+                _eligible_p = P.per_rebalance_universe(_close_p, _liq_p, _latest_p)
+                if len(_eligible_p) < 10:
+                    _eligible_p = _close_p.loc[_latest_p].dropna().index.tolist()
+                _ranked_p = _blend_signals(_signals_p, _weights_p, _latest_p, _eligible_p)
+                _sector_map_p = get_sector_map(market=market)
+
+                _n_picks = st.slider("Number of picks per side", 3, 10, 5, key="picks_n")
+                _longs_p  = _ranked_p[_ranked_p >= 0.88].sort_values(ascending=False).head(_n_picks)
+                _shorts_p = _ranked_p[_ranked_p <= 0.12].sort_values(ascending=True).head(_n_picks)
+
+                def _expected_return(score: float, ic: float, hold_hi: int) -> tuple[float, float]:
+                    """IC-implied expected return range (%, annualised to hold period)."""
+                    edge = ic * abs(score - 0.5) * 2 * 100
+                    lo = round(edge * 0.6, 1)
+                    hi = round(edge * 1.4, 1)
+                    return lo, hi
+
+                def _picks_card(sym: str, score: float, direction: str) -> None:
+                    sector = _sector_map_p.get(sym, "—")
+                    arrow = "📈" if direction == "long" else "📉"
+                    action = "BUY" if direction == "long" else "SHORT / AVOID"
+                    action_colour = "#27ae60" if direction == "long" else "#e74c3c"
+                    ret_lo, ret_hi = _expected_return(score, _VALIDATED_IC, _hold_hi)
+                    ret_sign = "+" if direction == "long" else "−"
+
+                    # Live price
+                    try:
+                        _px = float(_close_p.loc[_latest_p, sym])
+                        price_str = f"{_currency}{_px:,.2f}"
+                    except Exception:
+                        price_str = "—"
+
+                    st.markdown(
+                        f"<div style='border:1px solid #333;border-radius:8px;padding:12px 16px;"
+                        f"margin-bottom:8px;background:#16161e'>"
+                        f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+                        f"  <span style='font-size:1.05em;font-weight:700'>{arrow} {sym}</span>"
+                        f"  <span style='background:{action_colour};color:#fff;border-radius:4px;"
+                        f"    padding:2px 8px;font-size:0.8em;font-weight:600'>{action}</span>"
+                        f"</div>"
+                        f"<div style='color:#aaa;font-size:0.85em;margin-top:4px'>"
+                        f"  Sector: {sector} &nbsp;|&nbsp; Price: {price_str}"
+                        f"</div>"
+                        f"<div style='margin-top:6px;font-size:0.9em'>"
+                        f"  Hold <b>{_hold_lo}–{_hold_hi} days</b> &nbsp;|&nbsp; "
+                        f"  Expected <b style='color:{action_colour}'>{ret_sign}{ret_lo}–{ret_hi}%</b>"
+                        f"  <span style='color:#666;font-size:0.8em'> (algo signal, not a guarantee)</span>"
+                        f"</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    # Quick-add to paper trade
+                    with st.expander(f"  ↳ Add {sym} to paper trade", expanded=False):
+                        _qty_p  = st.number_input("Qty", min_value=1, value=10,
+                                                  key=f"picks_qty_{sym}_{direction}")
+                        _epx_p  = st.number_input("Entry price", min_value=0.01,
+                                                  value=round(_px if price_str != "—" else 100.0, 2),
+                                                  key=f"picks_epx_{sym}_{direction}")
+                        if st.button(f"Log trade", key=f"picks_log_{sym}_{direction}"):
+                            _tdf = _load_trades()
+                            _new = {
+                                "id": str(_next_id(_tdf)),
+                                "symbol": sym, "direction": direction,
+                                "qty": str(_qty_p), "entry_price": str(_epx_p),
+                                "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                "exit_price": "", "exit_date": "", "pnl": "", "pnl_pct": "",
+                                "status": "open",
+                                "notes": (f"picks | score={score:.4f} "
+                                          f"strategy={_sk} target={ret_hi}%"),
+                            }
+                            _tdf = pd.concat([_tdf, pd.DataFrame([_new])], ignore_index=True)
+                            _save_trades(_tdf)
+                            st.success(f"✓ Logged {direction.upper()} {sym}")
+
+                lcol_p, rcol_p = st.columns(2)
+                with lcol_p:
+                    st.markdown("### 🟢 Buy")
+                    if _longs_p.empty:
+                        st.info("No strong buy signals right now.")
+                    for _sym, _sc in _longs_p.items():
+                        _picks_card(_sym, _sc, "long")
+
+                with rcol_p:
+                    st.markdown("### 🔴 Sell / Avoid")
+                    if _shorts_p.empty:
+                        st.info("No strong sell signals right now.")
+                    for _sym, _sc in _shorts_p.items():
+                        _picks_card(_sym, _sc, "short")
+
+                st.markdown(
+                    "<br><div style='color:#666;font-size:0.78em;text-align:center'>"
+                    "Algo signals based on statistical models. Not financial advice. "
+                    "Always verify with fundamentals and news before acting."
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
